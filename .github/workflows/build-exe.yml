@@ -1,0 +1,67 @@
+name: بناء EXE لويندوز
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-exe:
+    runs-on: windows-latest
+    steps:
+      - name: تحميل الكود
+        uses: actions/checkout@v4
+
+      - name: تثبيت Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: تثبيت المتطلبات
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: بناء AttendanceDump.exe
+        run: |
+          python -m PyInstaller --onefile --windowed --name "AttendanceDump" --collect-all openpyxl --collect-all webview --add-data "web;web" desktop_app.py
+
+      - name: رفع النسخة (Artifact)
+        uses: actions/upload-artifact@v4
+        with:
+          name: AttendanceDump-exe
+          path: dist/AttendanceDump.exe
+
+      - name: نشر Release مع EXE
+        uses: ncipollo/release-action@v1
+        with:
+          tag: v2.0
+          name: "v2.0 — نظام تفريغ البصمات (EXE جاهز)"
+          allowUpdates: true
+          replacesArtifacts: true
+          artifacts: dist/AttendanceDump.exe
+          artifactContentType: application/octet-stream
+          body: |
+            ## نظام تفريغ بصمات البصمة — نسخة ويندوز جاهزة
+
+            ### التنزيل
+            حمّل الملف **AttendanceDump.exe** من قسم Assets بالأسفل.
+
+            ### طريقة التشغيل
+            1. حمّل `AttendanceDump.exe` وضعه في مجلد مناسب.
+            2. شغّله بالنقر المزدوج (يحتاج Windows 10/11 — مكوّن Edge WebView2 مثبت مسبقاً في الأغلب).
+            3. إن لم تفتح النافذة الأصلية، شغّله من موجه الأوامر بالأمر:
+               `AttendanceDump.exe --browser`
+               (يفتح الواجهة في المتصفح تلقائياً).
+
+            ### أول تشغيل
+            - اختر ملف `attlog.txt` القادم من جهاز البصمة.
+            - اربط أسماء الموظفين من شاشة «ربط الموظفين».
+            - اضغط «توليد التقرير» للحصول على ملف Excel/CSV مطابق للقالب.
+
+            > ملاحظة: قد يُظهر Windows SmartScreen تنبيهاً لأن الملف غير موقّع رقمياً —
+            > اختر «More info» ثم «Run anyway».
