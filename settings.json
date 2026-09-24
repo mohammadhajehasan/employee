@@ -1,0 +1,87 @@
+{
+  "version": 1,
+  "template_path": "",
+  "dedup_seconds": 120,
+  "midday_split": "12:00",
+  "late_after": "08:15",
+  "late_enabled": false,
+  "workdays": [
+    6,
+    0,
+    1,
+    2,
+    3
+  ],
+  "employees": [
+    {
+      "id": 1025,
+      "template_name": "يزن أبو بايع",
+      "device_name": "",
+      "no_punch": false
+    },
+    {
+      "id": 1000,
+      "template_name": "دانيامحموض",
+      "device_name": "Dania ma",
+      "no_punch": false
+    },
+    {
+      "id": 1003,
+      "template_name": "",
+      "device_name": "A.Diab",
+      "no_punch": false
+    },
+    {
+      "id": 1004,
+      "template_name": "حازم حط",
+      "device_name": "Hazem Go",
+      "no_punch": false
+    },
+    {
+      "id": 1006,
+      "template_name": "براءه بطرني",
+      "device_name": "",
+      "no_punch": false
+    },
+    {
+      "id": 1017,
+      "template_name": "محمد طارق كركش",
+      "device_name": "",
+      "no_punch": false
+    },
+    {
+      "id": 1022,
+      "template_name": "",
+      "device_name": "Sallam",
+      "no_punch": false
+    },
+    {
+      "id": null,
+      "template_name": "مرام الراعي",
+      "device_name": "",
+      "no_punch": true
+    },
+    {
+      "id": null,
+      "template_name": "محمدأمين زكّر",
+      "device_name": "",
+      "no_punch": true
+    },
+    {
+      "id": null,
+      "template_name": "مروان الزرعوني",
+      "device_name": "",
+      "no_punch": true
+    },
+    {
+      "id": 1077,
+      "template_name": "",
+      "device_name": "Mystery",
+      "no_punch": false
+    }
+  ],
+  "notes": {
+    "2026-09-20|1017": "اجازة",
+    "2026-09-06|1016": "مأمورية"
+  }
+}

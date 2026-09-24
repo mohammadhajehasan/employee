@@ -2,20 +2,29 @@
 __pycache__/
 *.pyc
 *.pyo
-.venv/
-venv/
+*.pyd
+.Python
+*.egg-info/
 
-# مخرجات PyInstaller
+# PyInstaller
 build/
 dist/
 *.spec
 
-# بيانات المستخدم المحلية (تبقى على جهازك ولا تُرفع)
+# مخرجات التشغيل (تتولد محلياً)
 output/
-uploads/
-settings.json
 *.log
 
-# النظام
+# بيئات افتراضية
+venv/
+env/
+.venv/
+
+# إعدادات محلية شخصية
+settings_local.json
+
+# أدوات
+.vscode/
+.idea/
 .DS_Store
 Thumbs.db
