@@ -25,8 +25,8 @@ const state = {
 /* ---------------- طبقة الاتصال ---------------- */
 
 const isWebview = () => !!(window.pywebview && window.pywebview.api);
-const isServerMode = () => !isWebview() && location.protocol.startsWith("http");
-const isDemo = () => !isWebview() && !isServerMode();
+const isServerMode = () => !isWebview() && !FORCE_DEMO && location.protocol.startsWith("http");
+const isDemo = () => !isWebview() && (!isServerMode() || FORCE_DEMO);
 
 async function httpApi(fn, payload) {
   const res = await fetch("/api/" + fn, {
@@ -40,6 +40,20 @@ async function httpApi(fn, payload) {
 }
 
 let FORCE_DEMO = false;
+
+/* قراءة ملف من القرص كـ base64 مع معالجة أخطاء واضحة */
+function fileToB64(f) {
+  return new Promise((res, rej) => {
+    const rd = new FileReader();
+    rd.onerror = () => rej(new Error("تعذر قراءة الملف من القرص — تأكد أنه غير محمي وأن لديك صلاحية عليه"));
+    rd.onload = () => {
+      const s = String(rd.result || "");
+      const b64 = s.includes(",") ? s.split(",")[1] : s;
+      if (!b64) rej(new Error("الملف فارغ أو تعذر قراءته")); else res(b64);
+    };
+    rd.readAsDataURL(f);
+  });
+}
 
 async function callApi(fn, payload) {
   if (!FORCE_DEMO) {
@@ -112,6 +126,17 @@ async function demoApi(fn, p) {
       if (p.kind === "attlog") return { ok: true, path: "C:\\Attendance\\attlog.txt", name: "attlog.txt" };
       return { ok: true, path: "C:\\Attendance\\دوام_قالب.xlsx", name: "دوام_قالب.xlsx" };
     }
+
+    case "ingest_file":
+      await sleep(400);
+      return { ok: true, path: "(ملف تجريبي) " + (p.name || "file"), name: p.name || "file", size: (p.b64 || "").length };
+
+    case "template_info":
+      await sleep(300);
+      if (String(p.path || "").includes("قالب"))
+        return { ok: true, mode: "✅ وضع العرض: سيُعبّأ نسخة من قالبكم (توضيحي)", sheet: "دوام",
+                 names_count: 29, month_days_found: Array.from({ length: 30 }, (_, i) => i + 1) };
+      return { ok: false, error: "في وضع العرض اختر ملف القالب أولاً" };
 
     case "preview": {
       await sleep(900);
@@ -245,75 +270,88 @@ async function showTplInfo(path) {
   try {
     const info = await callApi("template_info", { path, year, month });
     bar.classList.remove("hidden");
-    bar.classList.toggle("warn", !!info.warning);
+    bar.classList.toggle("warn", !!(info.warning || !info.ok));
     if (!info.ok) { $("#tplBarText").textContent = "⚠ " + (info.error || "تعذر تحليل القالب"); return; }
     if (info.warning) {
       $("#tplBarText").textContent = "⚠ " + info.warning;
     } else {
       const dcount = (info.month_days_found || []).length;
       $("#tplBarText").textContent =
-        `✅ ${info.mode} — ${info.names_count} اسماً في القالب، ${dcount} يوماً لـ ${MONTHS_AR[month - 1]} ${year} (ورقة: ${info.sheet})`;
+        `${info.mode} — ${info.names_count} اسماً في القالب، ${dcount} يوماً لـ ${MONTHS_AR[month - 1]} ${year} (ورقة: ${info.sheet})`;
     }
   } catch (e) {
     bar.classList.remove("hidden");
+    bar.classList.add("warn");
     $("#tplBarText").textContent = "⚠ تعذر تحليل القالب: " + String(e.message || e);
   }
 }
 
 async function pickAttlog() {
-  if (isWebview()) {
-    const r = await callApi("select_file", { kind: "attlog" });
-    if (r && r.path) { state.attlogPath = r.path; state.attlogName = r.name; updateAttlogUI(); }
-    return;
-  }
-  const inp = document.createElement("input");
-  inp.type = "file"; inp.accept = ".txt,.log,text/plain";
-  inp.onchange = async () => {
-    const f = inp.files[0]; if (!f) return;
-    if (isServerMode()) {
-      const b64 = await new Promise(res => { const rd = new FileReader(); rd.onload = () => res(rd.result.split(",")[1]); rd.readAsDataURL(f); });
-      try {
-        const r = await callApi("ingest_file", { name: f.name, b64, kind: "attlog" });
-        state.attlogPath = r.path; state.attlogName = r.name || f.name;
-      } catch (e) { toast(String(e.message || e), "err"); return; }
-    } else {
-      state.attlogPath = "(ملف تجريبي)"; state.attlogName = f.name;
+  try {
+    if (isWebview()) {
+      const r = await callApi("select_file", { kind: "attlog" });
+      if (r && r.path) { state.attlogPath = r.path; state.attlogName = r.name; updateAttlogUI(); toast("تم اختيار ملف البصمات ✓", "ok"); }
+      return;
     }
-    updateAttlogUI();
-  };
-  inp.click();
+    const inp = document.createElement("input");
+    inp.type = "file"; inp.accept = ".txt,.log,text/plain";
+    inp.onchange = async () => {
+      const f = inp.files[0]; if (!f) return;
+      try {
+        if (isServerMode()) {
+          const b64 = await fileToB64(f);
+          const r = await callApi("ingest_file", { name: f.name, b64, kind: "attlog" });
+          state.attlogPath = r.path || "(ملف مرفوع) " + f.name;
+          state.attlogName = r.name || f.name;
+          toast("✅ تم استلام ملف البصمات بنجاح", "ok");
+        } else {
+          state.attlogPath = "(ملف تجريبي)"; state.attlogName = f.name;
+          toast("وضع العرض: لن يُقرأ الملف فعلياً", "warn");
+        }
+      } catch (e) { toast(String(e.message || e), "err"); return; }
+      updateAttlogUI();
+    };
+    inp.click();
+  } catch (e) { toast(String(e.message || e), "err"); }
 }
 
 async function pickTpl() {
-  if (isWebview()) {
-    const r = await callApi("select_file", { kind: "template" });
-    if (r && r.path) {
-      state.tplPath = r.path;
-      updateTplUI();
-      // حفظ القالب في الإعدادات فوراً حتى يُستخدم في كل التوليدات
-      state.settings.template_path = r.path;
-      callApi("save_settings", { settings: state.settings });
-      showTplInfo(r.path);
-    }
-    return;
-  }
-  const inp = document.createElement("input");
-  inp.type = "file"; inp.accept = ".xlsx";
-  inp.onchange = async () => {
-    const f = inp.files[0]; if (!f) return;
-    if (isServerMode()) {
-      const b64 = await new Promise(res => { const rd = new FileReader(); rd.onload = () => res(rd.result.split(",")[1]); rd.readAsDataURL(f); });
-      try {
-        const r = await callApi("ingest_file", { name: f.name, b64, kind: "template" });
+  try {
+    if (isWebview()) {
+      const r = await callApi("select_file", { kind: "template" });
+      if (r && r.path) {
         state.tplPath = r.path;
         state.settings.template_path = r.path;
-        callApi("save_settings", { settings: state.settings });
+        callApi("save_settings", { settings: state.settings }).catch(() => {});
+        updateTplUI();
+        toast("✅ تم استلام القالب بنجاح — " + (r.name || ""), "ok");
+        showTplInfo(r.path);
+      }
+      return;
+    }
+    const inp = document.createElement("input");
+    inp.type = "file";
+    inp.accept = ".xlsx,.xlsm,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+    inp.onchange = async () => {
+      const f = inp.files[0]; if (!f) return;
+      try {
+        if (isServerMode()) {
+          const b64 = await fileToB64(f);
+          const r = await callApi("ingest_file", { name: f.name, b64, kind: "template" });
+          state.tplPath = r.path || "(قالب مرفوع) " + f.name;
+          state.settings.template_path = r.path || "";
+          callApi("save_settings", { settings: state.settings }).catch(() => {});
+          toast("✅ تم استلام القالب بنجاح — " + (r.name || f.name), "ok");
+        } else {
+          state.tplPath = "(قالب تجريبي) " + f.name;
+          toast("وضع العرض: لن يُستخدم القالب فعلياً", "warn");
+        }
       } catch (e) { toast(String(e.message || e), "err"); return; }
-    } else { state.tplPath = "(قالب تجريبي).xlsx"; }
-    updateTplUI();
-    showTplInfo(state.tplPath);
-  };
-  inp.click();
+      updateTplUI();
+      showTplInfo(state.tplPath);
+    };
+    inp.click();
+  } catch (e) { toast(String(e.message || e), "err"); }
 }
 
 async function doPreview() {

@@ -17,6 +17,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import shutil
 import sys
 import threading
@@ -39,7 +40,8 @@ sys.path.insert(0, _CODE_DIR)
 SETTINGS_PATH = os.path.join(APP_DIR, "settings.json")
 OUTPUT_DIR = os.path.join(APP_DIR, "output")
 UPLOAD_DIR = os.path.join(APP_DIR, "uploads")
-VERSION = "2.2"
+VERSION = "2.3"
+MAX_UPLOAD = 40 * 1024 * 1024  # 40MB
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -115,7 +117,7 @@ class Api:
         import webview
         types = {
             "attlog": ["ملفات النص (*.txt;*.log)", "كل الملفات (*.*)"],
-            "template": ["ملفات Excel (*.xlsx)", "كل الملفات (*.*)"],
+            "template": ["ملفات Excel (*.xlsx;*.xlsm)", "كل الملفات (*.*)"],
         }.get(kind, ["كل الملفات (*.*)"])
         result = webview.windows[0].create_file_dialog(
             webview.OPEN_DIALOG, allow_multiple=False, file_types=types)
@@ -144,15 +146,39 @@ class Api:
         return {"ok": False, "error": "cancelled"}
 
     def ingest_file(self, p):
-        """استقبال ملف من وضع المتصفح (يُحفظ في uploads)."""
-        os.makedirs(UPLOAD_DIR, exist_ok=True)
-        name = os.path.basename(p.get("name", "file"))
-        data = base64.b64decode(p.get("b64", ""))
-        safe = "".join(c for c in name if c not in '\\/:*?"<>|').strip() or "file"
-        path = os.path.join(UPLOAD_DIR, safe)
-        with open(path, "wb") as f:
-            f.write(data)
-        return {"ok": True, "path": path, "name": safe}
+        """استقبال ملف من الواجهة (base64) وحفظه في uploads — مع تحقق واضح."""
+        try:
+            os.makedirs(UPLOAD_DIR, exist_ok=True)
+            b64s = str(p.get("b64") or "")
+            if b64s.startswith("data:") and "," in b64s:      # احتياط: لو أُرسل dataURL كاملاً
+                b64s = b64s.split(",", 1)[1]
+            b64s = re.sub(r"\s+", "", b64s)
+            if not b64s:
+                return {"ok": False, "error": "محتوى الملف فارغ — أعد اختيار الملف وتأكد من اكتماله"}
+            try:
+                data = base64.b64decode(b64s)
+            except Exception:
+                return {"ok": False, "error": "تعذر فك ترميز الملف — أعد اختياره من جديد"}
+            if not data:
+                return {"ok": False, "error": "الملف المختار فارغ (0 بايت)"}
+            if len(data) > MAX_UPLOAD:
+                return {"ok": False, "error": "الملف أكبر من الحد المسموح (40MB)"}
+            kind = p.get("kind", "")
+            if kind == "template":
+                # ملف xlsx حقيقي يبدأ بتوقيع ZIP «PK» — يكشف xls القديم والملفات التالفة
+                if len(data) < 100 or data[:2] != b"PK":
+                    return {"ok": False, "error":
+                            "هذا الملف ليس Excel بصيغة xlsx الحديثة (قد يكون xls قديماً أو تالفاً). "
+                            "الحل: افتحه في Excel ثم ملف ← حفظ باسم ← «Excel Workbook (*.xlsx)» "
+                            "وأعد اختياره."}
+            raw_name = os.path.basename(str(p.get("name") or "file"))
+            safe = "".join(c for c in raw_name if c not in '\\/:*?"<>|').strip() or "file"
+            path = os.path.join(UPLOAD_DIR, safe)
+            with open(path, "wb") as f:
+                f.write(data)
+            return {"ok": True, "path": path, "name": safe, "size": len(data)}
+        except Exception as e:
+            return {"ok": False, "error": f"فشل حفظ الملف المرفوع: {type(e).__name__}: {e}"}
 
     def download_file(self, p):
         """«حفظ باسم» للملفات المولّدة (وضع النافذة الأصلية): حوار + نسخ."""
@@ -192,9 +218,11 @@ class Api:
         path = p.get("path") or self.settings.get("template_path") or ""
         if not path or not os.path.exists(path):
             return {"ok": False, "error": "لم يُحدد ملف قالب صالح"}
-        year, month = self._ym(p)
-        info = analyze_template(path, year, month)
-        return info
+        try:
+            year, month = self._ym(p)
+            return analyze_template(path, year, month)
+        except Exception as e:
+            return {"ok": False, "error": f"تعذر تحليل القالب: {type(e).__name__}: {e}"}
 
     def open_path(self, p):
         path = p.get("path", "")
@@ -256,8 +284,22 @@ class Api:
             files = [out]
         else:
             settings = dict(self.settings)
-            if p.get("template") or self.settings.get("template_path"):
-                settings["template_path"] = p.get("template") or self.settings.get("template_path")
+            tpl = p.get("template") or self.settings.get("template_path") or ""
+            if tpl:
+                settings["template_path"] = tpl
+                # فحص مسبع للقالب: نشرح في السجل ما سيحدث قبل التوليد
+                try:
+                    from template_writer import analyze_template
+                    tinfo = analyze_template(tpl, year, month)
+                    if tinfo.get("ok") and tinfo.get("mode"):
+                        logs.append("القالب: " + tinfo["mode"]
+                                    + f" ({len(tinfo.get('month_days_found') or [])} يوماً)")
+                    elif tinfo.get("warning"):
+                        logs.append("⚠ القالب: " + tinfo["warning"])
+                    elif tinfo.get("error"):
+                        logs.append("⚠ القالب: " + tinfo["error"] + " — سيُستخدم المولّد المدمج")
+                except Exception as e:
+                    logs.append(f"⚠ تعذر فحص القالب: {e} — سيُستخدم المولّد المدمج")
             try:
                 pr, att, scan, quality = run_pipeline(
                     attlog, year, month, out, settings, verbose=False)

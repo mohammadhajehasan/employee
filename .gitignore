@@ -28,3 +28,6 @@ settings_local.json
 .idea/
 .DS_Store
 Thumbs.db
+
+# ملفات مرفوعة من الواجهة
+uploads/
