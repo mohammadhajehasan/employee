@@ -3,9 +3,20 @@
 يقرأ هذا البرنامج ملف `attlog.txt` الصادر عن جهاز البصمة، ويحوّله تلقائياً إلى جدول دوام
 بصيغة Excel — مع معالجة كل الحالات الخاصة التي تظهر في بيانات الجهاز.
 
-> **الإصدار 2.0 — واجهة حديثة كلياً**: نافذة سطح مكتب أصلية بواجهة ويب عربية RTL
+> **الإصدار 2.4 — النسخة النهائية**: نافذة سطح مكتب أصلية بواجهة ويب عربية RTL
 > (ثيم داكن/فاتح، خط Cairo مضمّن، مؤشرات KPI، جداول تفاعلية، تقارير داخل التطبيق).
 > نقطة الدخول الجديدة: `desktop_app.py` — وواجهة Tkinter القديمة ما زالت متاحة عبر `app.py --gui`.
+
+## ⬇️ تنزيل النسخة النهائية (EXE جاهز — بدون تثبيت Python)
+
+**[حمّل AttendanceDump.exe — النسخة النهائية v2.4](https://github.com/mohammadhajehasan/employee/releases/latest/download/AttendanceDump.exe)**
+
+- يعمل على أي جهاز Windows 10/11 بالنقر المزدوج — بدون Python إطلاقاً.
+- إن لم تُفتح النافذة الأصلية شغّله من موجه الأوامر بالأمر `AttendanceDump.exe --browser`.
+- صفحة الإصدار: <https://github.com/mohammadhajehasan/employee/releases/latest>
+- عرض تجريبي حي (يعالج الملفات على جهازك مباشرة): <https://mohammadhajehasan.github.io/employee/>
+
+> ملاحظة: قد يُظهر Windows SmartScreen تنبيهاً لأن الملف غير موقّع رقمياً — اختر «More info» ثم «Run anyway».
 
 > **📦 للرفع على GitHub والحصول على EXE تلقائي**: اقرأ **شرح_الرفع_على_غيت_هاب.md** —
 > المستودع يحتوي GitHub Actions يبني `AttendanceDump.exe` على خوادم ويندوز ويعطيك رابط تنزيل،
