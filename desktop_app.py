@@ -40,7 +40,7 @@ sys.path.insert(0, _CODE_DIR)
 SETTINGS_PATH = os.path.join(APP_DIR, "settings.json")
 OUTPUT_DIR = os.path.join(APP_DIR, "output")
 UPLOAD_DIR = os.path.join(APP_DIR, "uploads")
-VERSION = "2.3"
+VERSION = "2.4"
 MAX_UPLOAD = 40 * 1024 * 1024  # 40MB
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -116,8 +116,9 @@ class Api:
             return {"ok": False, "error": "الحوار الأصلي متاح في وضع النافذة فقط"}
         import webview
         types = {
-            "attlog": ["ملفات النص (*.txt;*.log)", "كل الملفات (*.*)"],
-            "template": ["ملفات Excel (*.xlsx;*.xlsm)", "كل الملفات (*.*)"],
+            # «كل الملفات» أولاً حتى لا يظهر أي ملف للمستخدم رمادياً في الحوار
+            "attlog": ["كل الملفات (*.*)", "ملفات النص (*.txt;*.log)"],
+            "template": ["ملفات Excel (*.xlsx;*.xlsm;*.xls)", "كل الملفات (*.*)"],
         }.get(kind, ["كل الملفات (*.*)"])
         result = webview.windows[0].create_file_dialog(
             webview.OPEN_DIALOG, allow_multiple=False, file_types=types)
@@ -171,6 +172,10 @@ class Api:
                             "هذا الملف ليس Excel بصيغة xlsx الحديثة (قد يكون xls قديماً أو تالفاً). "
                             "الحل: افتحه في Excel ثم ملف ← حفظ باسم ← «Excel Workbook (*.xlsx)» "
                             "وأعد اختياره."}
+            if kind == "attlog" and data[:2] == b"PK":
+                return {"ok": False, "error":
+                        "يبدو أنك اخترت ملف Excel لملف البصمات — ملف البصمات attlog ملف نصي "
+                        "(TXT) يصدّره جهاز البصمة. اختر الملف النصي الصحيح."}
             raw_name = os.path.basename(str(p.get("name") or "file"))
             safe = "".join(c for c in raw_name if c not in '\\/:*?"<>|').strip() or "file"
             path = os.path.join(UPLOAD_DIR, safe)

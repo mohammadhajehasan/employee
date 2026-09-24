@@ -195,7 +195,10 @@ body {
 .grid-2 { display: grid; grid-template-columns: 1.25fr .9fr; gap: 16px; }
 
 /* ---------- بطاقات الملفات ---------- */
-.file-card { display: flex; align-items: center; gap: 14px; }
+.file-card { display: flex; align-items: center; gap: 14px; cursor: pointer; }
+/* منطقة السحب والإفلات */
+.file-card.drop-hover { outline: 2px dashed var(--primary); outline-offset: 3px; background: color-mix(in srgb, var(--primary) 8%, transparent); }
+.file-card.drop-hover .file-ic { transform: scale(1.08); transition: transform .15s ease; }
 .file-ic {
   width: 48px; height: 48px; border-radius: 13px; flex-shrink: 0;
   display: grid; place-items: center;

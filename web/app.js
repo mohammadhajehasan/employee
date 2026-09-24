@@ -27,6 +27,7 @@ const state = {
 const isWebview = () => !!(window.pywebview && window.pywebview.api);
 const isServerMode = () => !isWebview() && !FORCE_DEMO && location.protocol.startsWith("http");
 const isDemo = () => !isWebview() && (!isServerMode() || FORCE_DEMO);
+const isLocalHost = () => ["localhost", "127.0.0.1", "", "0.0.0.0"].includes(location.hostname);
 
 async function httpApi(fn, payload) {
   const res = await fetch("/api/" + fn, {
@@ -34,7 +35,12 @@ async function httpApi(fn, payload) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload || {}),
   });
-  const data = await res.json().catch(() => ({}));
+  const ct = res.headers.get("content-type") || "";
+  const text = await res.text();
+  let data = null;
+  try { data = JSON.parse(text); } catch (e) {
+    throw new Error("الاستجابة ليست من محرك النظام — تأكد من تشغيل التطبيق من desktop_app.py");
+  }
   if (!res.ok || data.ok === false) throw new Error(data.error || ("HTTP " + res.status));
   return data;
 }
@@ -65,6 +71,13 @@ async function callApi(fn, payload) {
     if (isServerMode()) {
       try { return await httpApi(fn, payload); }
       catch (e) {
+        // تأخر جسر pywebview في النافذة الأصلية (تشتغل بخادم داخلي بلا /api)؟
+        // ننتظر ظهوره قبل أي تحول للوضع التجريبي — هذا سبب «فشل الرفع» في EXE سابقاً
+        const maybeWebview = !!window.pywebview && !window.__NO_WEBVIEW__;
+        const localMaybe = isLocalHost() && !window.__NO_WEBVIEW__;
+        if (!isWebview() && (maybeWebview || localMaybe)) {
+          if (await waitWebview(maybeWebview ? 8000 : 3000)) return callApi(fn, payload);
+        }
         // على استضافة ثابتة (GitHub Pages) لا يوجد محرك — ننتقل للوضع التجريبي
         if (fn === "app_info" || fn === "get_state") FORCE_DEMO = true;
         else throw e;
@@ -85,105 +98,201 @@ function waitWebview(ms) {
   });
 }
 
-/* ---------------- وضع العرض التجريبي ---------------- */
+/* انتظار ذكي: داخل النافذة الأصلية قد يتأخر الجسر — ننتظره قبل أي قرار */
+async function waitForBridge(ms) {
+  if (isWebview()) return true;
+  if (window.__NO_WEBVIEW__) return false;
+  // إشارات بيئة نافذة سطح مكتب: وجود كائن pywebview أو بروتوكول غير http
+  if (window.pywebview || !location.protocol.startsWith("http")) return await waitWebview(ms || 8000);
+  return isWebview();
+}
 
-const DEMO = {
-  employees: [
-    { id: 1025, template_name: "يزن أبو بايع",     device_name: "Yazeed",   no_punch: false },
-    { id: 1000, template_name: "دانيامحموض",       device_name: "Dania ma", no_punch: false },
-    { id: 1004, template_name: "حازم حط",          device_name: "Hazem Go", no_punch: false },
-    { id: 1006, template_name: "براءه بطرني",      device_name: "Baraa B",  no_punch: false },
-    { id: 1017, template_name: "محمد طارق كركش",   device_name: "M.Tareq",  no_punch: false },
-    { id: 1003, template_name: "",                 device_name: "A.Diab",   no_punch: false },
-    { id: 1022, template_name: "",                 device_name: "Sallam",   no_punch: false },
-  ],
-  notes: { "2026-09-20|1017": "اجازة", "2026-09-06|1016": "مأمورية" },
-  workdays: [6, 0, 1, 2, 3],
-  perEmp: {
-    1025: { days: 22, problems: 2 }, 1000: { days: 21, problems: 1 },
-    1004: { days: 22, problems: 0 }, 1006: { days: 20, problems: 3 },
-    1017: { days: 21, problems: 1 }, 1003: { days: 18, problems: 2 },
-    1022: { days: 9,  problems: 1 },
+/* ---------------- وضع المعالجة المحلية (بدون خادم — محرك حقيقي داخل الصفحة) ----------------
+   عبر web/engine.js: يقرأ attlog فعلياً، يحلل القالب، ويولّد ملف Excel حقيقي
+   قابل للتنزيل — كل ذلك محلياً على جهاز المستخدم دون إرسال أي ملف لأي خادم. */
+
+const DEMO_STORE = {
+  settings: {
+    version: 1, template_path: "", dedup_seconds: 120, midday_split: "12:00",
+    late_after: "08:15", late_enabled: false,
+    workdays: [6, 0, 1, 2, 3],
+    employees: [
+      { id: 1025, template_name: "يزن أبو بايع",   device_name: "Yazeed",   no_punch: false },
+      { id: 1000, template_name: "دانيامحموض",     device_name: "Dania ma", no_punch: false },
+      { id: 1004, template_name: "حازم حط",        device_name: "Hazem Go", no_punch: false },
+      { id: 1006, template_name: "براءه بطرني",    device_name: "Baraa B",  no_punch: false },
+      { id: 1017, template_name: "محمد طارق كركش", device_name: "M.Tareq",  no_punch: false },
+      { id: 1003, template_name: "",               device_name: "A.Diab",   no_punch: false },
+      { id: 1022, template_name: "",               device_name: "Sallam",   no_punch: false },
+    ],
+    notes: { "2026-09-20|1017": "اجازة", "2026-09-06|1016": "مأمورية" },
   },
+  attlog: null,    // {name, bytes: Uint8Array}
+  tpl: null,       // {name, bytes}
+  outBlobs: {},    // اسم الملف → Blob (ناتج توليد حقيقي قابل للتنزيل)
 };
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
+function b64ToBytes(b64) {
+  const bin = atob(String(b64 || "").replace(/\s+/g, ""));
+  const u8 = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+  return u8;
+}
+
+function bytesToBlob(u8, mime) {
+  return new Blob([u8.slice().buffer], { type: mime || "application/octet-stream" });
+}
+
 async function demoApi(fn, p) {
+  const S = DEMO_STORE.settings;
+
   switch (fn) {
     case "app_info":
-      return { ok: true, version: "2.0", mode: "وضع العرض التجريبي", settings_path: "C:\\Attendance\\settings.json" };
+      return { ok: true, version: "2.4", mode: "المعالجة المحلية داخل المتصفح (محرك مدمج)",
+               settings_path: "(الوضع المحلي — لا يوجد ملف إعدادات)" };
 
     case "get_state":
-      return { ok: true, settings: { version: 1, template_path: "", dedup_seconds: 120, midday_split: "12:00", late_after: "08:15", late_enabled: false, workdays: DEMO.workdays, employees: DEMO.employees, notes: DEMO.notes } };
+      return { ok: true, settings: S };
 
     case "save_settings":
-      await sleep(300);
+      if (p && p.settings) Object.assign(S, p.settings);
       return { ok: true };
 
-    case "select_file": {
-      await sleep(250);
-      if (p.kind === "attlog") return { ok: true, path: "C:\\Attendance\\attlog.txt", name: "attlog.txt" };
-      return { ok: true, path: "C:\\Attendance\\دوام_قالب.xlsx", name: "دوام_قالب.xlsx" };
+    case "select_file":
+      return { ok: false, error: "الحوار الأصلي غير متاح هنا — استخدم زر اختيار الملف أو اسحب الملف إلى البطاقة" };
+
+    case "ingest_file": {
+      await sleep(200);
+      const bytes = b64ToBytes(p.b64);
+      if (!bytes.length) return { ok: false, error: "الملف المختار فارغ (0 بايت)" };
+      if (bytes.length > 40 * 1024 * 1024) return { ok: false, error: "الملف أكبر من الحد المسموح (40MB)" };
+      const kind = p.kind || "";
+      if (kind === "template") {
+        if (bytes.length < 100 || bytes[0] !== 0x50 || bytes[1] !== 0x4b)
+          return { ok: false, error: "هذا الملف ليس Excel بصيغة xlsx الحديثة (قد يكون xls قديماً أو تالفاً). الحل: افتحه في Excel ثم ملف ← حفظ باسم ← «Excel Workbook (*.xlsx)» وأعد اختياره." };
+      }
+      if (kind === "attlog" && bytes[0] === 0x50 && bytes[1] === 0x4b)
+        return { ok: false, error: "يبدو أنك اخترت ملف Excel لملف البصمات — ملف البصمات attlog ملف نصي (TXT) يصدّره جهاز البصمة." };
+      const rawName = String(p.name || "file").split(/[\\/]/).pop();
+      if (kind === "attlog") { DEMO_STORE.attlog = { name: rawName, bytes }; DEMO_STORE.outBlobs = {}; }
+      if (kind === "template") { DEMO_STORE.tpl = { name: rawName, bytes }; S.template_path = "(محلي) " + rawName; }
+      return { ok: true, path: "(محلي) " + rawName, name: rawName, size: bytes.length };
     }
 
-    case "ingest_file":
-      await sleep(400);
-      return { ok: true, path: "(ملف تجريبي) " + (p.name || "file"), name: p.name || "file", size: (p.b64 || "").length };
-
-    case "template_info":
-      await sleep(300);
-      if (String(p.path || "").includes("قالب"))
-        return { ok: true, mode: "✅ وضع العرض: سيُعبّأ نسخة من قالبكم (توضيحي)", sheet: "دوام",
-                 names_count: 29, month_days_found: Array.from({ length: 30 }, (_, i) => i + 1) };
-      return { ok: false, error: "في وضع العرض اختر ملف القالب أولاً" };
+    case "template_info": {
+      await sleep(150);
+      if (!DEMO_STORE.tpl) return { ok: false, error: "اختر ملف القالب أولاً" };
+      try {
+        const year = p.year || 2026, month = p.month || 9;
+        const info = await window.Eng.analyzeTemplate(DEMO_STORE.tpl.bytes, year, month);
+        return Object.assign({ ok: true }, info);
+      } catch (e) {
+        return { ok: false, error: "تعذر تحليل القالب: " + String(e.message || e) };
+      }
+    }
 
     case "preview": {
-      await sleep(900);
-      const employees = Object.entries(DEMO.perEmp).map(([id, s]) => {
-        const e = DEMO.employees.find(x => x.id === +id) || {};
-        return { id: +id, name: e.template_name || e.device_name || ("#" + id), days: s.days, problems: s.problems };
-      });
-      return { ok: true, stats: { records: 287, corrupt: 2, duplicates: 4, encoding: "utf-8", unmapped: { 1023: "Khaled", 1031: "Omar" }, employees } };
+      await sleep(400);
+      if (!DEMO_STORE.attlog) {
+        // بيانات توضيحية عندما لا يُختار ملف بعد
+        const perEmp = { 1025: { days: 22, problems: 2 }, 1000: { days: 21, problems: 1 },
+                         1004: { days: 22, problems: 0 }, 1006: { days: 20, problems: 3 },
+                         1017: { days: 21, problems: 1 }, 1003: { days: 18, problems: 2 },
+                         1022: { days: 9,  problems: 1 } };
+        const employees = Object.entries(perEmp).map(([id, s]) => {
+          const e = S.employees.find(x => x.id === +id) || {};
+          return { id: +id, name: e.template_name || e.device_name || ("#" + id), days: s.days, problems: s.problems };
+        });
+        return { ok: true, stats: { records: 287, corrupt: 2, duplicates: 4, encoding: "utf-8",
+                 unmapped: { 1023: "Khaled", 1031: "Omar" }, employees, demo: true } };
+      }
+      const year = p.year || 2026, month = p.month || 9;
+      const pr = window.Eng.parseAttlog(DEMO_STORE.attlog.bytes, +S.dedup_seconds || 120);
+      const att = window.Eng.processMonth(pr, S, year, month);
+      const sum = att.summary();
+      const employees = Object.entries(sum.perEmp).map(([id, s]) =>
+        ({ id: +id, name: s.name || ("#" + id), days: s.days, problems: s.problems }))
+        .sort((a, b) => a.id - b.id);
+      return { ok: true, stats: { records: pr.records.length, corrupt: pr.corrupt.length,
+               duplicates: pr.duplicates, encoding: pr.encoding,
+               total_lines: pr.totalLines, unmapped: sum.unmapped, employees } };
     }
 
     case "generate": {
-      await sleep(1500);
+      await sleep(500);
+      const year = p.year || 2026, month = p.month || 9;
       const isCsv = p.kind === "csv";
-      return {
-        ok: true,
-        path: isCsv ? "C:\\Attendance\\output\\تحقق_2026_09.csv" : "C:\\Attendance\\output\\دوام_سبتمبر_2026.xlsx",
-        files: isCsv
-          ? ["C:\\Attendance\\output\\تحقق_2026_09.csv"]
-          : ["C:\\Attendance\\output\\دوام_سبتمبر_2026.xlsx"],
-        logs: isCsv
-          ? ["تصدير CSV للتحقق اليدوي: 212 سطر"]
-          : ["[1/4] قراءة attlog: 287 بصمة سليمة | 2 سطر تالف | 4 مكرر محذوف", "[2/4] المعالجة: 133 يوم/موظف | 2 رقم غير مربوط", "[3/4] Excel (وضع القالب): دوام_سبتمبر_2026.xlsx", "[4/4] تقرير الجودة جاهز"],
-      };
+      if (!DEMO_STORE.attlog) return { ok: false, error: "اختر ملف attlog أولاً — في هذا الوضع يُعالج الملف فعلياً محلياً" };
+      const pr = window.Eng.parseAttlog(DEMO_STORE.attlog.bytes, +S.dedup_seconds || 120);
+      const att = window.Eng.processMonth(pr, S, year, month);
+      const sum = att.summary();
+      const base = isCsv ? `تحقق_${year}_${String(month).padStart(2, "0")}.csv`
+                         : `دوام_${window.Eng.MONTH_AR[month]}_${year}.xlsx`;
+      const logs = [
+        `[1/4] قراءة attlog: ${pr.records.length} بصمة سليمة | ${pr.corrupt.length} سطر تالف | ${pr.duplicates} مكرر محذوف (ترميز: ${pr.encoding})`,
+        `[2/4] المعالجة: ${sum.rowsCount} يوم/موظف | ${Object.keys(sum.unmapped).length} رقم غير مربوط`,
+      ];
+      try {
+        if (isCsv) {
+          const csv = "\uFEFF" + window.Eng.buildCsv(att, year, month);
+          DEMO_STORE.outBlobs[base] = bytesToBlob(new TextEncoder().encode(csv), "text/csv;charset=utf-8");
+          logs.push("[3/4] تصدير CSV للتحقق: " + (att.rows.size) + " سطر");
+        } else {
+          let outBytes = null;
+          const tpl = DEMO_STORE.tpl;
+          if (tpl) {
+            try {
+              const res = await window.Eng.fillTemplateBytes(tpl.bytes, att, S.employees || [], year, month);
+              outBytes = res.bytes;
+              logs.push("[3/4] Excel (وضع القالب الأصلي — نسخة من قالبكم نفسه)");
+              res.messages.forEach(m => logs.push("      " + m));
+            } catch (e) {
+              logs.push("⚠ القالب: " + String(e.message || e) + " — سيُستخدم المولّد المدمج");
+            }
+          }
+          if (!outBytes) {
+            outBytes = window.Eng.buildFallbackBytes(att, S, year, month);
+            logs.push("[3/4] Excel (المولّد المدمج المطابق لبنية القالب)" + (tpl ? "" : " — لم يُحدد قالب"));
+            logs.push("      ملاحظة: للتعبيئة داخل قالبكم الأصلي بنفس التنسيق استخدم تطبيق سطح المكتب (AttendanceDump.exe)");
+          }
+          DEMO_STORE.outBlobs[base] = bytesToBlob(outBytes, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+        }
+      } catch (e) {
+        return { ok: false, error: "فشل التوليد: " + String(e.message || e) };
+      }
+      logs.push("[4/4] جاهز — الملف مُولّد محلياً على جهازك");
+      return { ok: true, path: "(محلي) " + base, files: [base], logs };
     }
 
-    case "quality":
-      await sleep(700);
-      return { ok: true, lines: [
-        "== أرقام وظيفية في attlog غير مربوطة بأسماء القالب ==",
-        "  - الرقم 1023 (اسم الجهاز: Khaled)",
-        "  - الرقم 1031 (اسم الجهاز: Omar)", "",
-        "== أيام بنقص بصمة ==",
-        "  - 2026-09-03: براءه بطرني ← نقص بصمة خروج (دخول)",
-        "  - 2026-09-15: A.Diab ← نقص بصمة دخول (خروج)", "",
-        "== أيام فيها خروج وعودة (أكثر من بصمتين) ==",
-        "  - 2026-09-10: يزن أبو بايع ← خروج وعودة: 12:31", "",
-        "== موظفون في القالب بلا أي بصمة طوال الشهر ==",
-        "  - مرام الراعي", "", "== بصمات مكررة حُذفت (فارق أقل من دقيقتين): 4 ==",
-      ] };
+    case "quality": {
+      await sleep(300);
+      if (!DEMO_STORE.attlog) return { ok: false, error: "اختر ملف attlog أولاً" };
+      const year = p.year || 2026, month = p.month || 9;
+      const pr = window.Eng.parseAttlog(DEMO_STORE.attlog.bytes, +S.dedup_seconds || 120);
+      const att = window.Eng.processMonth(pr, S, year, month);
+      return { ok: true, lines: window.Eng.buildQuality(att, pr, S, year, month) };
+    }
 
     case "open_path":
-      toast("في وضع العرض: " + (p.path || ""), "warn");
+      toast("في الوضع المحلي: " + (p.path || ""), "warn");
       return { ok: true };
 
-    case "scan_ids":
-      await sleep(700);
-      return { ok: true, added: 2 };
+    case "scan_ids": {
+      await sleep(300);
+      if (!DEMO_STORE.attlog) return { ok: false, error: "اختر ملف attlog في شاشة التوليد أولاً" };
+      const pr = window.Eng.parseAttlog(DEMO_STORE.attlog.bytes, +S.dedup_seconds || 120);
+      const known = new Set((S.employees || []).map(e => e.id));
+      let added = 0;
+      for (const id of Object.keys(pr.idsFound)) {
+        if (!known.has(+id)) {
+          S.employees.push({ id: +id, template_name: "", device_name: pr.idsFound[id], no_punch: false });
+          added++;
+        }
+      }
+      return { ok: true, added };
+    }
 
     default:
       return { ok: true };
@@ -286,72 +395,117 @@ async function showTplInfo(path) {
   }
 }
 
+/* ---------- اختيار الملفات: قنوات متعددة لضمان النجاح دائماً ----------
+   1) حوار النظام الأصلي (وضع النافذة)  2) منتقي الملفات المدمج (كل الصيغ)
+   3) السحب والإفلات على البطاقة — وبعد الاختيار تحقق واضح برسائل عربية */
+
+function pickViaInput(onFile) {
+  // بلا سمة accept إطلاقاً: كل الملفات قابلة للاختيار ولا شيء يظهر رمادياً
+  const inp = document.createElement("input");
+  inp.type = "file";
+  inp.onchange = async () => {
+    const f = inp.files && inp.files[0];
+    if (f) await onFile(f);
+  };
+  inp.click();
+}
+
+function enableDrop(el, onFile) {
+  if (!el) return;
+  ["dragenter", "dragover"].forEach(ev =>
+    el.addEventListener(ev, e => { e.preventDefault(); el.classList.add("drop-hover"); }));
+  ["dragleave", "drop"].forEach(ev =>
+    el.addEventListener(ev, e => { e.preventDefault(); el.classList.remove("drop-hover"); }));
+  el.addEventListener("drop", e => {
+    const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+    if (f) onFile(f);
+  });
+}
+
+function isCancelledErr(e) {
+  return /cancel|إلغاء|ألغي/i.test(String(e && e.message || e || ""));
+}
+
+async function handleAttlogFile(f) {
+  try {
+    if (isWebview() || isServerMode()) {
+      const b64 = await fileToB64(f);
+      const r = await callApi("ingest_file", { name: f.name, b64, kind: "attlog" });
+      state.attlogPath = r.path || "(ملف مرفوع) " + f.name;
+      state.attlogName = r.name || f.name;
+      toast("✅ تم استلام ملف البصمات بنجاح — " + (r.name || f.name), "ok");
+    } else {
+      // وضع المعالجة المحلية: يُرسل الملف كاملاً للمحرك المدمج
+      const b64 = await fileToB64(f);
+      const r = await callApi("ingest_file", { name: f.name, b64, kind: "attlog" });
+      state.attlogPath = r.path || "(محلي) " + f.name;
+      state.attlogName = r.name || f.name;
+      toast("✅ استُلم الملف وسيُقرأ محلياً على جهازك — " + f.name, "ok");
+    }
+  } catch (e) { toast(String(e.message || e), "err"); return; }
+  updateAttlogUI();
+}
+
+async function handleTplFile(f) {
+  try {
+    if (isWebview() || isServerMode()) {
+      const b64 = await fileToB64(f);
+      const r = await callApi("ingest_file", { name: f.name, b64, kind: "template" });
+      state.tplPath = r.path || "(قالب مرفوع) " + f.name;
+    } else {
+      const b64 = await fileToB64(f);
+      const r = await callApi("ingest_file", { name: f.name, b64, kind: "template" });
+      state.tplPath = r.path || "(محلي) " + f.name;
+      toast("✅ تم استلام القالب — سيُحلل محلياً — " + (r.name || f.name), "ok");
+    }
+    state.settings.template_path = state.tplPath;
+    callApi("save_settings", { settings: state.settings }).catch(() => {});
+    if (!isWebview() && !isServerMode()) { /* التوست أعلاه */ }
+    else toast("✅ تم استلام القالب بنجاح — " + f.name, "ok");
+  } catch (e) { toast(String(e.message || e), "err"); return; }
+  updateTplUI();
+  showTplInfo(state.tplPath);
+}
+
 async function pickAttlog() {
   try {
     if (isWebview()) {
-      const r = await callApi("select_file", { kind: "attlog" });
-      if (r && r.path) { state.attlogPath = r.path; state.attlogName = r.name; updateAttlogUI(); toast("تم اختيار ملف البصمات ✓", "ok"); }
-      return;
-    }
-    const inp = document.createElement("input");
-    inp.type = "file"; inp.accept = ".txt,.log,text/plain";
-    inp.onchange = async () => {
-      const f = inp.files[0]; if (!f) return;
       try {
-        if (isServerMode()) {
-          const b64 = await fileToB64(f);
-          const r = await callApi("ingest_file", { name: f.name, b64, kind: "attlog" });
-          state.attlogPath = r.path || "(ملف مرفوع) " + f.name;
-          state.attlogName = r.name || f.name;
-          toast("✅ تم استلام ملف البصمات بنجاح", "ok");
-        } else {
-          state.attlogPath = "(ملف تجريبي)"; state.attlogName = f.name;
-          toast("وضع العرض: لن يُقرأ الملف فعلياً", "warn");
-        }
-      } catch (e) { toast(String(e.message || e), "err"); return; }
-      updateAttlogUI();
-    };
-    inp.click();
-  } catch (e) { toast(String(e.message || e), "err"); }
+        const r = await callApi("select_file", { kind: "attlog" });
+        if (r && r.path) { state.attlogPath = r.path; state.attlogName = r.name; updateAttlogUI(); toast("تم اختيار ملف البصمات ✓", "ok"); return; }
+        return; // أُلغي الحوار
+      } catch (e) {
+        if (isCancelledErr(e)) return;
+        // فشل حوار النظام — نجرّب منتقي الملفات المدمج داخل النافذة
+        toast("تعذر فتح حوار النظام — سيُستخدم منتقي الملفات المدمج", "warn");
+      }
+    }
+    pickViaInput(handleAttlogFile);
+  } catch (e) { if (!isCancelledErr(e)) toast(String(e.message || e), "err"); }
 }
 
 async function pickTpl() {
   try {
     if (isWebview()) {
-      const r = await callApi("select_file", { kind: "template" });
-      if (r && r.path) {
-        state.tplPath = r.path;
-        state.settings.template_path = r.path;
-        callApi("save_settings", { settings: state.settings }).catch(() => {});
-        updateTplUI();
-        toast("✅ تم استلام القالب بنجاح — " + (r.name || ""), "ok");
-        showTplInfo(r.path);
-      }
-      return;
-    }
-    const inp = document.createElement("input");
-    inp.type = "file";
-    inp.accept = ".xlsx,.xlsm,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
-    inp.onchange = async () => {
-      const f = inp.files[0]; if (!f) return;
       try {
-        if (isServerMode()) {
-          const b64 = await fileToB64(f);
-          const r = await callApi("ingest_file", { name: f.name, b64, kind: "template" });
-          state.tplPath = r.path || "(قالب مرفوع) " + f.name;
-          state.settings.template_path = r.path || "";
+        const r = await callApi("select_file", { kind: "template" });
+        if (r && r.path) {
+          state.tplPath = r.path;
+          state.settings.template_path = r.path;
           callApi("save_settings", { settings: state.settings }).catch(() => {});
-          toast("✅ تم استلام القالب بنجاح — " + (r.name || f.name), "ok");
-        } else {
-          state.tplPath = "(قالب تجريبي) " + f.name;
-          toast("وضع العرض: لن يُستخدم القالب فعلياً", "warn");
+          updateTplUI();
+          toast("✅ تم استلام القالب بنجاح — " + (r.name || ""), "ok");
+          showTplInfo(r.path);
+          return;
         }
-      } catch (e) { toast(String(e.message || e), "err"); return; }
-      updateTplUI();
-      showTplInfo(state.tplPath);
-    };
-    inp.click();
-  } catch (e) { toast(String(e.message || e), "err"); }
+        return; // أُلغي الحوار
+      } catch (e) {
+        if (isCancelledErr(e)) return;
+        toast("تعذر فتح حوار النظام — سيُستخدم منتقي الملفات المدمج", "warn");
+      }
+    }
+    pickViaInput(handleTplFile);
+  } catch (e) { if (!isCancelledErr(e)) toast(String(e.message || e), "err"); }
 }
 
 async function doPreview() {
@@ -407,12 +561,24 @@ async function downloadFile(path) {
   if (!path) return;
   const name = baseName(path);
 
-  // 1) وضع العرض التجريبي: نولّد CSV فعلياً من بيانات العرض ليعمل التنزيل
+  // 0) ناتج توليد حقيقي من المحرك المحلي — يُنزّل كما هو
+  if (typeof DEMO_STORE !== "undefined" && DEMO_STORE.outBlobs[name]) {
+    const url = URL.createObjectURL(DEMO_STORE.outBlobs[name]);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+    toast("نُزّل: " + name);
+    return;
+  }
+
+  // 1) وضع المعالجة المحلية بلا ناتج مولّد: نولّد CSV حقيقي من بيانات العرض
   if (FORCE_DEMO || isDemo()) {
     const rows = [["الرقم", "الموظف", "أيام الحضور", "أيام بملاحظات"]];
-    Object.entries(DEMO.perEmp).forEach(([id, s]) => {
-      const e = DEMO.employees.find(x => x.id === +id) || {};
-      rows.push([id, e.template_name || e.device_name || ("#" + id), s.days, s.problems]);
+    (state.settings.employees || []).forEach(e => {
+      if (e.id == null) return;
+      rows.push([e.id, e.template_name || e.device_name || ("#" + e.id), "", ""]);
     });
     const csv = "\uFEFF" + rows.map(r => r.join(",")).join("\r\n");
     const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
@@ -421,7 +587,7 @@ async function downloadFile(path) {
     a.download = name.replace(/\.(xlsx|csv|txt)$/i, "") + "_تجريبي.csv";
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 4000);
-    toast("نُزّل ملف تجريبي (CSV) — النسخة المثبتة تولّد Excel كامل", "warn");
+    toast("ولّد ملف attlog ثم اضغط «توليد» للحصول على Excel حقيقي", "warn");
     return;
   }
 
@@ -474,9 +640,9 @@ async function doGenerate(kind) {
     const res = await callApi("generate", { attlog: state.attlogPath, year, month, out, kind: kind || "xlsx", template: state.tplPath || null });
     addOutFiles(res.files, res.logs);
     toast(kind === "csv" ? "تم تصدير ملف التحقق CSV" : "تم توليد ملف الدوام بنجاح");
-    // وضع المتصفح: بدء التنزيل تلقائياً بعد التوليد
-    if (!isWebview() && isServerMode() && !FORCE_DEMO) {
-      (res.files || []).forEach((f, i) => setTimeout(() => downloadFile(f), 500 + i * 700));
+    // وضع المتصفح/المحلي: بدء التنزيل تلقائياً بعد التوليد
+    if (!isWebview()) {
+      (res.files || []).forEach((f, i) => setTimeout(() => downloadFile(f), 600 + i * 700));
     }
   }, "جارٍ توليد ملف الدوام…");
 }
@@ -684,9 +850,15 @@ function bindUI() {
   $("#themeToggle").onclick = () =>
     applyTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark");
 
-  $("#pickAttlog").onclick = pickAttlog;
-  $("#pickTpl").onclick = pickTpl;
-  $("#clearTpl").onclick = () => {
+  // اختيار الملفات: زر + النقر على البطاقة كاملة + السحب والإفلات
+  $("#pickAttlog").onclick = e => { e.stopPropagation(); pickAttlog(); };
+  $("#attlogCard").onclick = () => pickAttlog();
+  enableDrop($("#attlogCard"), handleAttlogFile);
+  $("#pickTpl").onclick = e => { e.stopPropagation(); pickTpl(); };
+  $("#tplCard").onclick = () => pickTpl();
+  enableDrop($("#tplCard"), handleTplFile);
+  $("#clearTpl").onclick = e => {
+    e.stopPropagation();
     state.tplPath = "";
     state.settings.template_path = "";
     callApi("save_settings", { settings: state.settings });
@@ -733,8 +905,8 @@ function bindUI() {
   buildSelects();
   bindUI();
 
-  // انتظار جسر pywebview عند التشغيل داخل نافذة أصلية
-  if (!location.protocol.startsWith("http") && !window.__NO_WEBVIEW__) await waitWebview(2500);
+  // انتظار جسر pywebview عند التشغيل داخل نافذة أصلية (حتى لو كان العرض عبر خادم داخلي http)
+  await waitForBridge(8000);
 
   try {
     await loadState(false);
@@ -743,14 +915,15 @@ function bindUI() {
     $("#aboutMode").textContent = info.mode || "—";
     state.ready = true;
     // لو كان قالب محفوظاً من جلسة سابقة — أعرض حالته فوراً
-    if (state.settings && state.settings.template_path) {
+    if (state.settings && state.settings.template_path &&
+        !String(state.settings.template_path).startsWith("(محلي)")) {
       state.tplPath = state.settings.template_path;
       updateTplUI();
       showTplInfo(state.tplPath);
     }
     if (FORCE_DEMO || isDemo()) {
       $("#modeChip").classList.remove("hidden");
-      $("#enginePill span").textContent = "وضع العرض";
+      $("#enginePill span").textContent = "المحرك المحلي جاهز";
     } else if (isWebview()) {
       $("#enginePill span").textContent = "متصل بالمحرك";
     } else {

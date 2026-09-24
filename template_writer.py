@@ -149,6 +149,19 @@ def _merge_span(ws, row, col):
     return col, col
 
 
+# كلمات رؤوس الأعمدة — لا تُعتبر أسماء موظفين أبداً
+HEADER_WORDS = ("دخول", "حضور", "انصراف", "خروج", "ملاحظ", "ملحوظ",
+                "نهاية", "بداية", "الاسم", "الموظف", "اليوم", "التاريخ")
+
+
+def _is_header_word(v: str) -> bool:
+    """هل هذا النص رأس عمود (دخول/خروج/ملاحظات/ساعة الدخول...) وليس اسماً؟"""
+    nv = normalize_ar(v)
+    if nv in ("م", "ت"):
+        return True
+    return any(w in nv for w in HEADER_WORDS)
+
+
 def _is_title_cell(ws, cell) -> bool:
     """خلية مدموجة عرضياً على أكثر من 3 أعمدة = عنوان وليست اسماً."""
     c0, c1 = _merge_span(ws, cell.row, cell.column)
@@ -336,11 +349,10 @@ def match_employee_rows(wb, scan: TemplateScan, employees: list):
         for cell in row:
             v = cell.value
             if isinstance(v, str) and 2 < len(v.strip()) <= 60 and not _is_title_cell(ws, cell):
-                # استبعد رؤوس الأعمدة مثل «الاسم/الموظف»
-                nv = normalize_ar(v)
-                if nv in ("الاسم", "الموظف", "اسم الموظف", "الاسم والرقم", "م", "ت"):
+                # استبعد رؤوس الأعمدة مثل «الاسم/الموظف/دخول/خروج/ملاحظات»
+                if _is_header_word(v):
                     continue
-                name_cells.append((cell.row, nv, v))
+                name_cells.append((cell.row, normalize_ar(v), v))
 
     for emp in employees:
         tn = emp.get("template_name", "")
@@ -394,8 +406,7 @@ def analyze_template(template_path: str, year: int, month: int) -> dict:
             for cell in row:
                 v = cell.value
                 if isinstance(v, str) and 2 < len(v.strip()) <= 60 and not _is_title_cell(ws, cell):
-                    nv = normalize_ar(v)
-                    if nv in ("الاسم", "الموظف", "اسم الموظف"):
+                    if _is_header_word(v):
                         continue
                     names.append(v.strip())
         # إزالة التكرار مع الحفاظ على الترتيب
