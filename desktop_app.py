@@ -1,0 +1,396 @@
+# -*- coding: utf-8 -*-
+"""
+desktop_app.py — نظام تفريغ البصمات: الواجهة الحديثة (الإصدار 2.0)
+=================================================================
+نافذة سطح مكتب أصلية تعرض واجهة ويب حديثة (HTML/CSS) عبر محرك النظام:
+  • على ويندوز: Edge WebView2 (مدمج في ويندوز 10/11) — خفيف وسريع
+  • بديل تلقائي: إذا لم تتوفر مكتبة pywebview يفتح التطبيق في المتصفح الافتراضي
+
+التشغيل:
+  python desktop_app.py            ← نافذة أصلية (أو متصفح تلقائياً عند عدم توفرها)
+  python desktop_app.py --browser  ← إجبار وضع المتصفح
+
+بناء EXE: استخدم build.bat (يتضمن مجلد web داخل الملف التنفيذي)
+"""
+from __future__ import annotations
+
+import base64
+import json
+import os
+import sys
+import threading
+import webbrowser
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+# ---------- المسارات (تعمل في التطوير وفي EXE) ----------
+if getattr(sys, "frozen", False):          # PyInstaller
+    APP_DIR = os.path.dirname(sys.executable)
+    WEB_DIR = os.path.join(getattr(sys, "_MEIPASS", APP_DIR), "web")
+    _CODE_DIR = getattr(sys, "_MEIPASS", APP_DIR)
+else:
+    APP_DIR = os.path.dirname(os.path.abspath(__file__))
+    WEB_DIR = os.path.join(APP_DIR, "web")
+    _CODE_DIR = APP_DIR
+
+sys.path.insert(0, _CODE_DIR)
+
+SETTINGS_PATH = os.path.join(APP_DIR, "settings.json")
+OUTPUT_DIR = os.path.join(APP_DIR, "output")
+UPLOAD_DIR = os.path.join(APP_DIR, "uploads")
+VERSION = "2.0"
+
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+MONTH_AR = {1: "يناير", 2: "فبراير", 3: "مارس", 4: "أبريل", 5: "مايو", 6: "يونيو",
+            7: "يوليو", 8: "أغسطس", 9: "سبتمبر", 10: "أكتوبر", 11: "نوفمبر", 12: "ديسمبر"}
+
+
+# ---------- محرك المعالجة (نفس نواة v1) ----------
+from app import run_pipeline                      # noqa: E402
+from att_parser import parse_attlog               # noqa: E402
+from processor import Processor                   # noqa: E402
+from excel_writer import export_csv               # noqa: E402
+from quality_report import build_report, save_report  # noqa: E402
+
+
+def load_settings() -> dict:
+    if not os.path.exists(SETTINGS_PATH):
+        return {"version": 1, "employees": [], "notes": {}}
+    try:
+        with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {"version": 1, "employees": [], "notes": {}}
+
+
+class Api:
+    """جسر موحّد تستدعيه الواجهة (نفس التوابع تعمل في وضعي النافذة والمتصفح)."""
+
+    def __init__(self):
+        self.settings = load_settings()
+
+    # ----- أدوات داخلية -----
+    def _save(self):
+        with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
+            json.dump(self.settings, f, ensure_ascii=False, indent=2)
+
+    def _ym(self, p):
+        return int(p.get("year", 2026)), int(p.get("month", 9))
+
+    def _default_out(self, kind: str, year: int, month: int) -> str:
+        if kind == "csv":
+            return os.path.join(OUTPUT_DIR, f"تحقق_{year}_{month:02d}.csv")
+        if kind == "quality":
+            return os.path.join(OUTPUT_DIR, f"تقرير_الجودة_{year}_{month:02d}.txt")
+        return os.path.join(OUTPUT_DIR, f"دوام_{MONTH_AR.get(month, month)}_{year}.xlsx")
+
+    # ----- معلومات -----
+    def app_info(self, p=None):
+        mode = "نافذة سطح مكتب (WebView)" if _RUN_MODE == "webview" else "متصفح"
+        return {"ok": True, "version": VERSION, "mode": mode,
+                "settings_path": SETTINGS_PATH, "output_dir": OUTPUT_DIR,
+                "platform": sys.platform}
+
+    def get_state(self, p=None):
+        return {"ok": True, "settings": self.settings, "output_dir": OUTPUT_DIR}
+
+    def save_settings(self, p):
+        s = p.get("settings")
+        if not isinstance(s, dict):
+            return {"ok": False, "error": "إعدادات غير صالحة"}
+        s.setdefault("employees", [])
+        s.setdefault("notes", {})
+        self.settings = s
+        self._save()
+        return {"ok": True}
+
+    # ----- حوارات الملفات -----
+    def select_file(self, p):
+        """فتح ملف من قرص المستخدم (وضع النافذة الأصلية فقط)."""
+        kind = p.get("kind", "attlog")
+        if _RUN_MODE != "webview":
+            return {"ok": False, "error": "الحوار الأصلي متاح في وضع النافذة فقط"}
+        import webview
+        types = {
+            "attlog": ["ملفات النص (*.txt;*.log)", "كل الملفات (*.*)"],
+            "template": ["ملفات Excel (*.xlsx)", "كل الملفات (*.*)"],
+        }.get(kind, ["كل الملفات (*.*)"])
+        result = webview.windows[0].create_file_dialog(
+            webview.OPEN_DIALOG, allow_multiple=False, file_types=types)
+        if result:
+            path = result[0] if isinstance(result, (list, tuple)) else result
+            return {"ok": True, "path": path, "name": os.path.basename(str(path))}
+        return {"ok": False, "error": "cancelled"}
+
+    def save_dialog(self, p):
+        """حوار حفظ باسم افتراضي (وضع النافذة الأصلية فقط)."""
+        if _RUN_MODE != "webview":
+            return {"ok": False, "error": "cancelled"}
+        import webview
+        kinds = {
+            "xlsx": ["ملفات Excel (*.xlsx)"],
+            "csv": ["ملفات CSV (*.csv)"],
+            "quality": ["ملفات النص (*.txt)"],
+        }
+        result = webview.windows[0].create_file_dialog(
+            webview.SAVE_DIALOG,
+            save_filename=p.get("default_name", "دوام.xlsx"),
+            file_types=kinds.get(p.get("kind", "xlsx"), ["كل الملفات (*.*)"]))
+        if result:
+            path = result[0] if isinstance(result, (list, tuple)) else result
+            return {"ok": True, "path": str(path)}
+        return {"ok": False, "error": "cancelled"}
+
+    def ingest_file(self, p):
+        """استقبال ملف من وضع المتصفح (يُحفظ في uploads)."""
+        os.makedirs(UPLOAD_DIR, exist_ok=True)
+        name = os.path.basename(p.get("name", "file"))
+        data = base64.b64decode(p.get("b64", ""))
+        safe = "".join(c for c in name if c not in '\\/:*?"<>|').strip() or "file"
+        path = os.path.join(UPLOAD_DIR, safe)
+        with open(path, "wb") as f:
+            f.write(data)
+        return {"ok": True, "path": path, "name": safe}
+
+    def open_path(self, p):
+        path = p.get("path", "")
+        if path == "OUTPUT_DIR":
+            path = OUTPUT_DIR
+        if not path or not os.path.exists(path):
+            return {"ok": False, "error": "المسار غير موجود"}
+        try:
+            if sys.platform == "win32":
+                os.startfile(path)  # type: ignore[attr-defined]
+            elif sys.platform == "darwin":
+                os.system(f'open "{path}" &')
+            else:
+                os.system(f'xdg-open "{path}" &')
+            return {"ok": True}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    # ----- المعاينة والتوليد -----
+    def preview(self, p):
+        attlog = p.get("attlog", "")
+        year, month = self._ym(p)
+        if not attlog or not os.path.exists(attlog):
+            return {"ok": False, "error": "مسار attlog غير صحيح"}
+        pr = parse_attlog(attlog, int(self.settings.get("dedup_seconds", 120)))
+        proc = Processor(self.settings)
+        att = proc.process(pr, year, month)
+        summ = proc.summary(att)
+        employees = []
+        for emp_id, s in sorted(summ["per_employee"].items()):
+            employees.append({"id": emp_id, "name": s["name"] or f"#{emp_id}",
+                              "days": s["days"], "problems": s["problems"]})
+        return {"ok": True, "stats": {
+            "records": len(pr.records),
+            "corrupt": len(pr.corrupt_lines),
+            "duplicates": pr.duplicates_removed,
+            "encoding": pr.encoding,
+            "total_lines": pr.total_lines,
+            "unmapped": {str(k): v for k, v in summ["unmapped_ids"].items()},
+            "employees": employees,
+        }}
+
+    def generate(self, p):
+        attlog = p.get("attlog", "")
+        year, month = self._ym(p)
+        kind = p.get("kind", "xlsx")
+        if not attlog or not os.path.exists(attlog):
+            return {"ok": False, "error": "مسار attlog غير صحيح"}
+        out = p.get("out") or self._default_out("xlsx" if kind == "xlsx" else kind, year, month)
+        os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+        logs = []
+
+        if kind == "csv":
+            pr = parse_attlog(attlog, int(self.settings.get("dedup_seconds", 120)))
+            proc = Processor(self.settings)
+            att = proc.process(pr, year, month)
+            export_csv(att, out, year, month)
+            logs.append(f"تصدير CSV للتحقق: {len(att.rows)} سطر")
+            files = [out]
+        else:
+            settings = dict(self.settings)
+            if p.get("template") or self.settings.get("template_path"):
+                settings["template_path"] = p.get("template") or self.settings.get("template_path")
+            try:
+                pr, att, scan, quality = run_pipeline(
+                    attlog, year, month, out, settings, verbose=False)
+                logs.append(f"[1/4] قراءة attlog: {len(pr.records)} بصمة سليمة | "
+                            f"{len(pr.corrupt_lines)} سطر تالف | {pr.duplicates_removed} مكرر محذوف")
+                logs.append(f"[2/4] المعالجة: {len(att.rows)} يوم/موظف | "
+                            f"{len(att.unmapped_ids)} رقم غير مربوط")
+                if scan is not None:
+                    logs.append("[3/4] Excel (وضع القالب الأصلي)")
+                    logs.extend("      " + m for m in scan.messages)
+                else:
+                    logs.append("[3/4] Excel (المولّد المدمج المطابق للوصف)")
+                files = [out]
+            except Exception as e:
+                return {"ok": False, "error": f"فشل التوليد: {e}"}
+        return {"ok": True, "path": out, "files": files, "logs": logs}
+
+    def quality(self, p):
+        attlog = p.get("attlog", "")
+        year, month = self._ym(p)
+        if not attlog or not os.path.exists(attlog):
+            return {"ok": False, "error": "مسار attlog غير صحيح"}
+        pr = parse_attlog(attlog, int(self.settings.get("dedup_seconds", 120)))
+        proc = Processor(self.settings)
+        att = proc.process(pr, year, month)
+        return {"ok": True, "lines": build_report(att, pr, self.settings, year, month)}
+
+    def save_quality(self, p):
+        attlog = p.get("attlog", "")
+        year, month = self._ym(p)
+        if not attlog or not os.path.exists(attlog):
+            return {"ok": False, "error": "مسار attlog غير صحيح"}
+        out = p.get("out") or self._default_out("quality", year, month)
+        pr = parse_attlog(attlog, int(self.settings.get("dedup_seconds", 120)))
+        proc = Processor(self.settings)
+        att = proc.process(pr, year, month)
+        save_report(build_report(att, pr, self.settings, year, month), out)
+        return {"ok": True, "files": [out]}
+
+    def scan_ids(self, p):
+        """فحص attlog وإضافة الأرقام غير المعروفة إلى جدول الربط."""
+        attlog = p.get("attlog", "")
+        if not attlog or not os.path.exists(attlog):
+            return {"ok": False, "error": "مسار attlog غير صحيح"}
+        pr = parse_attlog(attlog, int(self.settings.get("dedup_seconds", 120)))
+        known = {e.get("id") for e in self.settings.get("employees", [])}
+        added = 0
+        for emp_id, (dev, _cnt) in pr.ids_found().items():
+            if emp_id not in known:
+                self.settings.setdefault("employees", []).append(
+                    {"id": emp_id, "template_name": "", "device_name": dev, "no_punch": False})
+                added += 1
+        if added:
+            self._save()
+        return {"ok": True, "added": added}
+
+
+API = Api()
+_RUN_MODE = "browser"
+
+# الطرق المسموح استدعاؤها من الواجهة عبر HTTP
+ALLOWED = {"app_info", "get_state", "save_settings", "select_file", "save_dialog",
+           "ingest_file", "open_path", "preview", "generate", "quality",
+           "save_quality", "scan_ids"}
+
+
+# ---------- وضع المتصفح الاحتياطي ----------
+
+_MIME = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8",
+         ".js": "application/javascript; charset=utf-8", ".ttf": "font/ttf",
+         ".png": "image/png", ".svg": "image/svg+xml", ".ico": "image/x-icon",
+         ".woff2": "font/woff2", ".json": "application/json; charset=utf-8"}
+
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, *a):  # إسكات سجل الكونسول
+        pass
+
+    def _send(self, code, body: bytes, ctype: str):
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        path = self.path.split("?")[0]
+        if path in ("/", "/index.html"):
+            path = "/index.html"
+        fname = os.path.normpath(path.lstrip("/")).replace("..", "")
+        full = os.path.join(WEB_DIR, fname)
+        if not os.path.isfile(full):
+            self._send(404, "غير موجود".encode("utf-8"), "text/plain; charset=utf-8")
+            return
+        ext = os.path.splitext(full)[1].lower()
+        with open(full, "rb") as f:
+            self._send(200, f.read(), _MIME.get(ext, "application/octet-stream"))
+
+    def do_POST(self):
+        if not self.path.startswith("/api/"):
+            self._send(404, b"{}", "application/json")
+            return
+        fn = self.path[len("/api/"):].strip("/")
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+            payload = json.loads(self.rfile.read(length) or b"{}") if length else {}
+        except Exception:
+            payload = {}
+        if fn not in ALLOWED or not hasattr(API, fn):
+            self._send(200, json.dumps({"ok": False, "error": "طريقة غير معروفة"},
+                                       ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8")
+            return
+        try:
+            result = getattr(API, fn)(payload)
+        except Exception as e:
+            result = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+        self._send(200, json.dumps(result, ensure_ascii=False).encode("utf-8"),
+                   "application/json; charset=utf-8")
+
+
+def run_browser_mode(port: int = 0):
+    global _RUN_MODE
+    _RUN_MODE = "browser"
+    # منفذ صريح = وضع خدمة (ربط على كل الواجهات)، منفذ عشوائي = تشغيل محلي
+    host = "0.0.0.0" if port else "127.0.0.1"
+    server = ThreadingHTTPServer((host, port), Handler)
+    bound_port = server.server_address[1]
+    url = f"http://127.0.0.1:{bound_port}/"
+    print(f"[*] وضع المتصفح: {url}")
+    print("[*] أغلق نافذة الطرفية (أو Ctrl+C) لإيقاف التطبيق.")
+    if not port:
+        threading.Timer(0.8, lambda: webbrowser.open(url)).start()
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\n[*] تم الإيقاف.")
+
+
+def run_webview_mode():
+    global _RUN_MODE
+    import webview  # pywebview
+    _RUN_MODE = "webview"
+    index = os.path.join(WEB_DIR, "index.html")
+    webview.create_window(
+        "نظام تفريغ البصمات — جدول الدوام الآلي",
+        index,
+        js_api=API,
+        width=1300, height=860,
+        min_size=(1080, 700),
+        background_color="#0b1220",
+    )
+    webview.start(http_server=True)
+
+
+def main():
+    force_browser = "--browser" in sys.argv
+    port = 0
+    for a in sys.argv[1:]:
+        if a.startswith("--port="):
+            try:
+                port = int(a.split("=", 1)[1])
+                force_browser = True
+            except ValueError:
+                pass
+    if not force_browser:
+        try:
+            run_webview_mode()
+            return 0
+        except ImportError:
+            print("[!] مكتبة pywebview غير مثبتة — التحويل إلى وضع المتصفح.")
+            print("    لتشغيل النافذة الأصلية:  pip install pywebview")
+        except Exception as e:
+            print(f"[!] تعذر تشغيل النافذة الأصلية ({e}) — التحويل إلى وضع المتصفح.")
+    run_browser_mode(port)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

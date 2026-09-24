@@ -1,0 +1,61 @@
+name: بناء EXE لويندوز
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches: [main]
+    tags: ["v*"]
+
+jobs:
+  build:
+    name: بناء AttendanceDump.exe
+    runs-on: windows-latest
+    steps:
+      - name: تحميل الكود
+        uses: actions/checkout@v4
+
+      - name: إعداد Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: تثبيت المتطلبات
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: بناء الملف التنفيذي (يتضمن واجهة الويب وخط Cairo)
+        run: >
+          python -m PyInstaller --onefile --windowed --name "AttendanceDump"
+          --collect-all openpyxl
+          --collect-all webview
+          --add-data "web;web"
+          desktop_app.py
+
+      - name: رفع الملف كـ Artifact (تنزيل مباشر من صفحة Actions)
+        uses: actions/upload-artifact@v4
+        with:
+          name: AttendanceDump-Windows-EXE
+          path: dist/AttendanceDump.exe
+          if-no-files-found: error
+
+  release:
+    name: إرفاق EXE بالإصدار Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: تنزيل الـ Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: AttendanceDump-Windows-EXE
+          path: dist
+
+      - name: إنشاء Release مع EXE
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/AttendanceDump.exe
+          generate_release_notes: true

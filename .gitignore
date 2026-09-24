@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# مخرجات PyInstaller
+build/
+dist/
+*.spec
+
+# بيانات المستخدم المحلية (تبقى على جهازك ولا تُرفع)
+output/
+uploads/
+settings.json
+*.log
+
+# النظام
+.DS_Store
+Thumbs.db
