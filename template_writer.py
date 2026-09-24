@@ -65,8 +65,6 @@ def scan_template(wb, year: int, month: int) -> TemplateScan:
             if d and d.year == year and d.month == month:
                 span = (cell.column, cell.column)
                 for mr in ws.merged_cells.ranges:
-                    if (cell.row, cell.column) in set():
-                        pass
                     if mr.min_row <= cell.row <= mr.max_row and mr.min_col <= cell.column <= mr.max_col:
                         span = (mr.min_col, mr.max_col)
                         break
@@ -82,7 +80,6 @@ def scan_template(wb, year: int, month: int) -> TemplateScan:
         if d in scan.date_anchors:
             continue
         info = {"row": row, "col_start": span[0], "col_end": span[1], "sub_map": {}}
-
         # 2) تحديد أعمدة الدخول/الخروج/الملاحظات: ابحث تحت خلية التاريخ حتى 4 صفوف
         labels = {"دخول": None, "خروج": None, "ملاحظات": None}
         for rr in range(row + 1, min(row + 5, ws.max_row + 1)):
@@ -148,6 +145,45 @@ def match_employee_rows(wb, scan: TemplateScan, employees: list):
     if scan.unmatched_names:
         scan.messages.append("أسماء لم تُعثر على صف لها: " + " ، ".join(scan.unmatched_names))
     return scan
+
+
+def analyze_template(template_path: str, year: int, month: int) -> dict:
+    """تحليل قالب بدون تعبئة — للمعاينة في الواجهة (أسماء/أيام/بنية)."""
+    try:
+        wb = load_workbook(template_path, read_only=False)
+    except Exception as e:
+        return {"ok": False, "error": f"تعذر فتح القالب: {e}"}
+    try:
+        ws = wb.active
+        info = {"ok": True, "sheet": ws.title,
+                "dimensions": ws.dimensions,
+                "merged_count": len(ws.merged_cells.ranges)}
+        # تواريخ الشهر الهدف في القالب
+        dates = set()
+        for row in ws.iter_rows():
+            for cell in row:
+                v = cell.value
+                if isinstance(v, datetime):
+                    v = v.date()
+                if isinstance(v, date) and v.year == year and v.month == month:
+                    dates.add(v.day)
+        info["month_days_found"] = sorted(dates)
+        # أسماء في أول عمودين
+        names = []
+        for row in ws.iter_rows(min_col=1, max_col=2):
+            for cell in row:
+                if isinstance(cell.value, str) and len(cell.value.strip()) > 2:
+                    names.append(cell.value.strip())
+        info["names"] = names[:80]
+        info["names_count"] = len(names)
+        if not dates:
+            info["warning"] = ("لم أجد خلايا تواريخ حقيقية لشهر الهدف في القالب — "
+                               "سيُستخدم المولّد المطابق لبنية القالب بدلاً من تعبئته مباشرة.")
+        else:
+            info["mode"] = "قالب أصلي: ستُعبّأ نسخة من القالب نفسه"
+        return info
+    finally:
+        wb.close()
 
 
 def write_month_to_template(template_path: str, out_path: str, att,

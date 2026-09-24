@@ -39,7 +39,7 @@ sys.path.insert(0, _CODE_DIR)
 SETTINGS_PATH = os.path.join(APP_DIR, "settings.json")
 OUTPUT_DIR = os.path.join(APP_DIR, "output")
 UPLOAD_DIR = os.path.join(APP_DIR, "uploads")
-VERSION = "2.1"
+VERSION = "2.2"
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -186,6 +186,16 @@ class Api:
         return {"ok": True, "name": name, "size": len(data),
                 "b64": base64.b64encode(data).decode("ascii")}
 
+    def template_info(self, p):
+        """تحليل قالب مختار: عدد الأسماء، أيام الشهر المكتشفة، وضع التوليد المتوقع."""
+        from template_writer import analyze_template
+        path = p.get("path") or self.settings.get("template_path") or ""
+        if not path or not os.path.exists(path):
+            return {"ok": False, "error": "لم يُحدد ملف قالب صالح"}
+        year, month = self._ym(p)
+        info = analyze_template(path, year, month)
+        return info
+
     def open_path(self, p):
         path = p.get("path", "")
         if path == "OUTPUT_DIR":
@@ -311,7 +321,8 @@ _RUN_MODE = "browser"
 # الطرق المسموح استدعاؤها من الواجهة عبر HTTP
 ALLOWED = {"app_info", "get_state", "save_settings", "select_file", "save_dialog",
            "ingest_file", "open_path", "download_file", "read_output_b64",
-           "preview", "generate", "quality", "save_quality", "scan_ids"}
+           "preview", "generate", "quality", "save_quality", "scan_ids",
+           "template_info"}
 
 
 # ---------- وضع المتصفح الاحتياطي ----------

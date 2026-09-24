@@ -28,7 +28,7 @@ jobs:
 
       - name: بناء AttendanceDump.exe
         run: |
-          python -m PyInstaller --onefile --windowed --name "AttendanceDump" --collect-all openpyxl --collect-all webview --add-data "web;web" desktop_app.py
+          python -m PyInstaller --onefile --windowed --name "AttendanceDump" --icon "assets\icon.ico" --collect-all openpyxl --collect-all webview --add-data "web;web" desktop_app.py
 
       - name: رفع النسخة (Artifact)
         uses: actions/upload-artifact@v4

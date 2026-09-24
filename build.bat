@@ -11,8 +11,9 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 python -m pip install pyinstaller
 
-echo [2/3] بناء الملف التنفيذي (يتضمن واجهة الويب داخل EXE)...
+echo [2/3] بناء الملف التنفيذي (يتضمن واجهة الويب + الأيقونة داخل EXE)...
 python -m PyInstaller --onefile --windowed --name "AttendanceDump" ^
+  --icon "assets\icon.ico" ^
   --collect-all openpyxl ^
   --collect-all webview ^
   --add-data "web;web" ^

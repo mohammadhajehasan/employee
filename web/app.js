@@ -238,6 +238,28 @@ function updateTplUI() {
   $("#clearTpl").classList.toggle("hidden", !state.tplPath);
 }
 
+async function showTplInfo(path) {
+  const bar = $("#tplBar");
+  if (!path) { bar.classList.add("hidden"); return; }
+  const { year, month } = ym();
+  try {
+    const info = await callApi("template_info", { path, year, month });
+    bar.classList.remove("hidden");
+    bar.classList.toggle("warn", !!info.warning);
+    if (!info.ok) { $("#tplBarText").textContent = "⚠ " + (info.error || "تعذر تحليل القالب"); return; }
+    if (info.warning) {
+      $("#tplBarText").textContent = "⚠ " + info.warning;
+    } else {
+      const dcount = (info.month_days_found || []).length;
+      $("#tplBarText").textContent =
+        `✅ ${info.mode} — ${info.names_count} اسماً في القالب، ${dcount} يوماً لـ ${MONTHS_AR[month - 1]} ${year} (ورقة: ${info.sheet})`;
+    }
+  } catch (e) {
+    bar.classList.remove("hidden");
+    $("#tplBarText").textContent = "⚠ تعذر تحليل القالب: " + String(e.message || e);
+  }
+}
+
 async function pickAttlog() {
   if (isWebview()) {
     const r = await callApi("select_file", { kind: "attlog" });
@@ -265,7 +287,14 @@ async function pickAttlog() {
 async function pickTpl() {
   if (isWebview()) {
     const r = await callApi("select_file", { kind: "template" });
-    if (r && r.path) { state.tplPath = r.path; updateTplUI(); }
+    if (r && r.path) {
+      state.tplPath = r.path;
+      updateTplUI();
+      // حفظ القالب في الإعدادات فوراً حتى يُستخدم في كل التوليدات
+      state.settings.template_path = r.path;
+      callApi("save_settings", { settings: state.settings });
+      showTplInfo(r.path);
+    }
     return;
   }
   const inp = document.createElement("input");
@@ -277,9 +306,12 @@ async function pickTpl() {
       try {
         const r = await callApi("ingest_file", { name: f.name, b64, kind: "template" });
         state.tplPath = r.path;
+        state.settings.template_path = r.path;
+        callApi("save_settings", { settings: state.settings });
       } catch (e) { toast(String(e.message || e), "err"); return; }
     } else { state.tplPath = "(قالب تجريبي).xlsx"; }
     updateTplUI();
+    showTplInfo(state.tplPath);
   };
   inp.click();
 }
@@ -616,7 +648,14 @@ function bindUI() {
 
   $("#pickAttlog").onclick = pickAttlog;
   $("#pickTpl").onclick = pickTpl;
-  $("#clearTpl").onclick = () => { state.tplPath = ""; updateTplUI(); toast("أُزيل القالب — سيُستخدم مولّد النظام", "warn"); };
+  $("#clearTpl").onclick = () => {
+    state.tplPath = "";
+    state.settings.template_path = "";
+    callApi("save_settings", { settings: state.settings });
+    updateTplUI();
+    $("#tplBar").classList.add("hidden");
+    toast("أُزيل القالب — سيُستخدم المولّد المطابق لبنية القالب", "warn");
+  };
 
   $("#btnPreview").onclick = () => doPreview();
   $("#btnGenerate").onclick = () => doGenerate("xlsx");
@@ -665,6 +704,12 @@ function bindUI() {
     $("#aboutSettings").textContent = info.settings_path || "—";
     $("#aboutMode").textContent = info.mode || "—";
     state.ready = true;
+    // لو كان قالب محفوظاً من جلسة سابقة — أعرض حالته فوراً
+    if (state.settings && state.settings.template_path) {
+      state.tplPath = state.settings.template_path;
+      updateTplUI();
+      showTplInfo(state.tplPath);
+    }
     if (FORCE_DEMO || isDemo()) {
       $("#modeChip").classList.remove("hidden");
       $("#enginePill span").textContent = "وضع العرض";
