@@ -17,10 +17,12 @@ from __future__ import annotations
 import base64
 import json
 import os
+import shutil
 import sys
 import threading
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, quote, urlparse
 
 # ---------- المسارات (تعمل في التطوير وفي EXE) ----------
 if getattr(sys, "frozen", False):          # PyInstaller
@@ -37,7 +39,7 @@ sys.path.insert(0, _CODE_DIR)
 SETTINGS_PATH = os.path.join(APP_DIR, "settings.json")
 OUTPUT_DIR = os.path.join(APP_DIR, "output")
 UPLOAD_DIR = os.path.join(APP_DIR, "uploads")
-VERSION = "2.0"
+VERSION = "2.1"
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -151,6 +153,38 @@ class Api:
         with open(path, "wb") as f:
             f.write(data)
         return {"ok": True, "path": path, "name": safe}
+
+    def download_file(self, p):
+        """«حفظ باسم» للملفات المولّدة (وضع النافذة الأصلية): حوار + نسخ."""
+        src = p.get("path", "")
+        if not src or not os.path.isfile(src):
+            return {"ok": False, "error": "الملف غير موجود"}
+        if _RUN_MODE != "webview":
+            return {"ok": False, "error": "cancelled"}
+        import webview
+        result = webview.windows[0].create_file_dialog(
+            webview.SAVE_DIALOG,
+            save_filename=os.path.basename(src) or "output.xlsx",
+            file_types=["كل الملفات (*.*)"])
+        if not result:
+            return {"ok": False, "error": "cancelled"}
+        dest = result[0] if isinstance(result, (list, tuple)) else result
+        try:
+            shutil.copyfile(src, str(dest))
+            return {"ok": True, "path": str(dest)}
+        except Exception as e:
+            return {"ok": False, "error": f"تعذر الحفظ: {e}"}
+
+    def read_output_b64(self, p):
+        """قراءة ملف من مجلد المخرجات (اسم فقط، بدون مسارات) كـ base64."""
+        name = os.path.basename(p.get("name", ""))
+        path = os.path.join(OUTPUT_DIR, name)
+        if not name or not os.path.isfile(path):
+            return {"ok": False, "error": "الملف غير موجود"}
+        with open(path, "rb") as f:
+            data = f.read()
+        return {"ok": True, "name": name, "size": len(data),
+                "b64": base64.b64encode(data).decode("ascii")}
 
     def open_path(self, p):
         path = p.get("path", "")
@@ -276,8 +310,8 @@ _RUN_MODE = "browser"
 
 # الطرق المسموح استدعاؤها من الواجهة عبر HTTP
 ALLOWED = {"app_info", "get_state", "save_settings", "select_file", "save_dialog",
-           "ingest_file", "open_path", "preview", "generate", "quality",
-           "save_quality", "scan_ids"}
+           "ingest_file", "open_path", "download_file", "read_output_b64",
+           "preview", "generate", "quality", "save_quality", "scan_ids"}
 
 
 # ---------- وضع المتصفح الاحتياطي ----------
@@ -302,6 +336,30 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = self.path.split("?")[0]
+        # ----- تنزيل ملف من مجلد المخرجات (اسم فقط، بدون مسارات) -----
+        if path == "/api/download":
+            qs = parse_qs(urlparse(self.path).query)
+            name = os.path.basename((qs.get("name") or [""])[0])
+            full = os.path.join(OUTPUT_DIR, name)
+            if not name or not os.path.isfile(full):
+                self._send(404, "الملف غير موجود".encode("utf-8"),
+                           "text/plain; charset=utf-8")
+                return
+            with open(full, "rb") as f:
+                body = f.read()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Length", str(len(body)))
+            ext = os.path.splitext(full)[1].lower()
+            ascii_fallback = "attendance" + (ext if ext in (".xlsx", ".csv", ".txt") else ".bin")
+            self.send_header(
+                "Content-Disposition",
+                f"attachment; filename=\"{ascii_fallback}\"; "
+                f"filename*=UTF-8''{quote(name)}")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if path in ("/", "/index.html"):
             path = "/index.html"
         fname = os.path.normpath(path.lstrip("/")).replace("..", "")

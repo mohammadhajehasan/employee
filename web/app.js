@@ -171,6 +171,7 @@ const ICON_OK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stro
 const ICON_ERR = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="M15 9l-6 6M9 9l6 6"/></svg>';
 const ICON_WARN = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg>';
 const ICON_FILE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>';
+const ICON_DL  = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg>';
 
 function toast(msg, kind) {
   const el = document.createElement("div");
@@ -330,6 +331,46 @@ function renderPreview(res, year, month) {
   toast(`تمت قراءة ${st.records} بصمة لـ ${(st.employees || []).length} موظف`);
 }
 
+function baseName(p) { return String(p).split(/[\\/]/).pop() || "file"; }
+
+async function downloadFile(path) {
+  if (!path) return;
+  const name = baseName(path);
+
+  // 1) وضع العرض التجريبي: نولّد CSV فعلياً من بيانات العرض ليعمل التنزيل
+  if (FORCE_DEMO || isDemo()) {
+    const rows = [["الرقم", "الموظف", "أيام الحضور", "أيام بملاحظات"]];
+    Object.entries(DEMO.perEmp).forEach(([id, s]) => {
+      const e = DEMO.employees.find(x => x.id === +id) || {};
+      rows.push([id, e.template_name || e.device_name || ("#" + id), s.days, s.problems]);
+    });
+    const csv = "\uFEFF" + rows.map(r => r.join(",")).join("\r\n");
+    const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = name.replace(/\.(xlsx|csv|txt)$/i, "") + "_تجريبي.csv";
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+    toast("نُزّل ملف تجريبي (CSV) — النسخة المثبتة تولّد Excel كامل", "warn");
+    return;
+  }
+
+  // 2) وضع المتصفح: نقطة تنزيل من الخادم المحلي
+  if (isServerMode()) {
+    window.location.href = "/api/download?name=" + encodeURIComponent(name);
+    toast("بدأ تنزيل: " + name);
+    return;
+  }
+
+  // 3) وضع النافذة الأصلية: حوار «حفظ باسم» ثم نسخ الملف
+  try {
+    const r = await callApi("download_file", { path, default_name: name });
+    if (r && r.ok) toast("حُفظ الملف في: " + r.path);
+  } catch (e) {
+    if (!/cancel/i.test(String(e.message || e))) toast(String(e.message || e), "err");
+  }
+}
+
 function addOutFiles(files, logs) {
   const box = $("#outLog");
   if (logs) {
@@ -340,9 +381,12 @@ function addOutFiles(files, logs) {
   (files || []).forEach(f => {
     const line = document.createElement("div");
     line.className = "file-line";
-    line.innerHTML = ICON_FILE + '<code title="انقر للفتح"></code>';
-    line.querySelector("code").textContent = f;
-    line.querySelector("code").onclick = () => openPath(f);
+    line.innerHTML = ICON_FILE + '<code title="انقر لفتح الملف"></code>' +
+      '<button class="dl-btn" title="تنزيل الملف إلى جهازك">' + ICON_DL + '<span>تنزيل</span></button>';
+    const code = line.querySelector("code");
+    code.textContent = f;
+    code.onclick = () => openPath(f);
+    line.querySelector(".dl-btn").onclick = () => downloadFile(f);
     box.appendChild(line);
   });
 }
@@ -360,6 +404,10 @@ async function doGenerate(kind) {
     const res = await callApi("generate", { attlog: state.attlogPath, year, month, out, kind: kind || "xlsx", template: state.tplPath || null });
     addOutFiles(res.files, res.logs);
     toast(kind === "csv" ? "تم تصدير ملف التحقق CSV" : "تم توليد ملف الدوام بنجاح");
+    // وضع المتصفح: بدء التنزيل تلقائياً بعد التوليد
+    if (!isWebview() && isServerMode() && !FORCE_DEMO) {
+      (res.files || []).forEach((f, i) => setTimeout(() => downloadFile(f), 500 + i * 700));
+    }
   }, "جارٍ توليد ملف الدوام…");
 }
 

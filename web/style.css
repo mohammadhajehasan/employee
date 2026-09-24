@@ -407,6 +407,18 @@ input[type="time"]::-webkit-calendar-picker-indicator { filter: invert(.6); curs
   cursor: pointer;
 }
 .out-log .file-line code:hover { color: var(--primary); text-decoration: underline; }
+.out-log .file-line code { margin-inline-end: auto; }
+.dl-btn {
+  display: inline-flex; align-items: center; gap: 5px; flex-shrink: 0;
+  border: 1px solid var(--primary-line); color: var(--primary);
+  background: var(--primary-soft); border-radius: 8px;
+  font: inherit; font-size: 11.5px; font-weight: 800;
+  padding: 3px 11px; cursor: pointer; margin-inline-start: auto;
+  transition: background .15s, color .15s, transform .1s;
+}
+.dl-btn svg { width: 13px; height: 13px; }
+.dl-btn:hover { background: var(--primary); color: #04121f; }
+.dl-btn:active { transform: scale(.95); }
 .out-log p { color: var(--text-faint); }
 
 /* ---------- الحالة الفارغة ---------- */
