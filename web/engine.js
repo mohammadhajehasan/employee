@@ -93,7 +93,9 @@ window.Eng = (function () {
   }
 
   function parseDT(text) {
-    const m = /^(\d{4})[-/](\d{1,2})[-/](\d{1,2})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*([AaPp])\.?[Mm]\.?$/.exec(text.trim());
+    const s = String(text || "").trim();
+    // سنة أولاً: YYYY-MM-DD / YYYY/MM/DD (+ ثوانٍ + AM/PM)
+    let m = /^(\d{4})[-/](\d{1,2})[-/](\d{1,2})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*([AaPp])\.?[Mm]\.?$/.exec(s);
     if (m) {
       let h = +m[4];
       const ap = m[7] ? m[7].toLowerCase() : null;
@@ -103,31 +105,72 @@ window.Eng = (function () {
       if (!validYMD(y, mo, d) || h > 23 || +m[5] > 59 || (+m[6] || 0) > 59) return null;
       return { y, m: mo, d, mins: h * 60 + +m[5] };
     }
-    const t = /^(\d{4})[-/](\d{1,2})[-/](\d{1,2})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(text.trim());
+    let t = /^(\d{4})[-/](\d{1,2})[-/](\d{1,2})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(s);
     if (t) {
       const y = +t[1], mo = +t[2], d = +t[3];
       if (!validYMD(y, mo, d) || +t[4] > 23 || +t[5] > 59 || (+t[6] || 0) > 59) return null;
       return { y, m: mo, d, mins: +t[4] * 60 + +t[5] };
     }
+    // يوم أولاً: d/m/yyyy أو d-m-yyyy (+ ثوانٍ + AM/PM) — الغامضة تُفسر يوم/شهر (المعتاد عربياً)،
+    // ويُعكس تلقائياً إذا كان العنصر الثاني > 12
+    m = /^(\d{1,2})[-/](\d{1,2})[-/](\d{4})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*([AaPp])\.?[Mm]\.?$/.exec(s);
+    if (m) {
+      let h = +m[4];
+      const ap = m[7] ? m[7].toLowerCase() : null;
+      if (ap === "p" && h < 12) h += 12;
+      if (ap === "a" && h === 12) h = 0;
+      if (h > 23 || +m[5] > 59 || (+m[6] || 0) > 59) return null;
+      const a = +m[1], b = +m[2], y = +m[3];
+      for (const [d, mo] of [[a, b], [b, a]]) {
+        if (validYMD(y, mo, d)) return { y, m: mo, d, mins: h * 60 + +m[5] };
+      }
+      return null;
+    }
+    t = /^(\d{1,2})[-/](\d{1,2})[-/](\d{4})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(s);
+    if (t) {
+      if (+t[4] > 23 || +t[5] > 59 || (+t[6] || 0) > 59) return null;
+      const a = +t[1], b = +t[2], y = +t[3];
+      for (const [d, mo] of [[a, b], [b, a]]) {
+        if (validYMD(y, mo, d)) return { y, m: mo, d, mins: +t[4] * 60 + +t[5] };
+      }
+      return null;
+    }
     return null;
   }
 
-  const NO_TAB_RE = /^\s*(\d+)\s+(.+?)\s+(\d{4}[-/]\d{1,2}[-/]\d{1,2})\s+(\d{1,2}:\d{2}(?::\d{2})?(?:\s*[AaPp][Mm])?)\s+(\S+)\s*(\S*)\s*$/;
+  const NO_TAB_RE = /^\s*(\d+)\s+(.+?)\s+(\d{1,4}[-/]\d{1,2}[-/]\d{1,4})\s+(\d{1,2}:\d{2}(?::\d{2})?(?:\s*[AaPp]\.?[Mm]\.?)?)\s+(\S+)\s*(\S*)\s*$/;
+
+  function splitLine(line) {
+    if (line.indexOf("\t") >= 0)
+      return line.split("\t").map(x => x.trim()).filter(x => x !== "");
+    if (line.indexOf(",") >= 0)
+      return line.split(",").map(x => x.trim()).filter(x => x !== "");
+    return null;
+  }
 
   function parseLine(line, lineNo) {
-    if (line.indexOf("\t") >= 0) {
-      const f = line.split("\t").map(x => x.trim()).filter(x => x !== "");
-      if (f.length < 3) return { rec: null, reason: "عدد الحقول أقل من 3" };
-      const [emp, name, dtPart] = f;
-      if (!/^\d+$/.test(emp)) return { rec: null, reason: "رقم الموظف غير رقمي" };
+    const f = splitLine(line);
+    if (f) {
+      if (f.length < 2) return { rec: null, reason: "عدد الحقول (" + f.length + ") أقل من 2" };
+      if (!/^\d+$/.test(f[0])) return { rec: null, reason: "رقم الموظف غير رقمي: '" + f[0].slice(0, 20) + "'" };
+      // كشف ذكي: إن كان الحقل الثاني تاريخاً → صيغة الجهاز بدون أسماء
+      // (ZKTeco: id<TAB>datetime<TAB>s1<TAB>s2...) وإلا فالحقل الثاني اسم
+      let name, dtPart, s1, s2;
+      if (parseDT(f[1])) {
+        name = ""; dtPart = f[1]; s1 = f[2] || ""; s2 = f[3] || "";
+      } else if (f.length >= 3 && parseDT(f[2])) {
+        name = f[1]; dtPart = f[2]; s1 = f[3] || ""; s2 = f[4] || "";
+      } else {
+        return { rec: null, reason: "لا توجد صيغة تاريخ صالحة في: '" + (f[1] || "").slice(0, 25) + "' / '" + (f[2] || "").slice(0, 25) + "'" };
+      }
       const dt = parseDT(dtPart);
       if (!dt) return { rec: null, reason: "تاريخ/وقت غير صالح: '" + dtPart + "'" };
-      return { rec: { id: +emp, name, ...dt, s1: f[3] || "", s2: f[4] || "", line: lineNo }, reason: null };
+      return { rec: { id: +f[0], name, ...dt, s1, s2, line: lineNo }, reason: null };
     }
     const m = NO_TAB_RE.exec(line);
-    if (!m) return { rec: null, reason: "سطر غير مطابق للصيغة (لا TAB ولا نمط نصي)" };
+    if (!m) return { rec: null, reason: "سطر غير مطابق للصيغة (لا TAB ولا فاصلة ولا نمط نصي)" };
     const dt = parseDT(m[3] + " " + m[4]);
-    if (!dt) return { rec: null, reason: "تاريخ/وقت غير صالح" };
+    if (!dt) return { rec: null, reason: "تاريخ/وقت غير صالح: '" + (m[3] + " " + m[4]).slice(0, 40) + "'" };
     return { rec: { id: +m[1], name: m[2].trim(), ...dt, s1: m[5], s2: m[6] || "", line: lineNo }, reason: null };
   }
 
@@ -160,7 +203,9 @@ window.Eng = (function () {
     }
     const names = {};
     for (const r of out) names[r.id] = r.name; // آخر اسم (نفس منطق بايثون)
-    return { records: out, corrupt, encoding, duplicates: removed, totalLines: total, idsFound: names };
+    const hasNames = out.some(r => r.name && r.name.length > 0);
+    return { records: out, corrupt, encoding, duplicates: removed, totalLines: total,
+             idsFound: names, hasNames };
   }
 
   /* ==================== معالجة الشهر ==================== */

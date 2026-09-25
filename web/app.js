@@ -226,11 +226,24 @@ async function demoApi(fn, p) {
       const isCsv = p.kind === "csv";
       if (!DEMO_STORE.attlog) return { ok: false, error: "اختر ملف attlog أولاً — في هذا الوضع يُعالج الملف فعلياً محلياً" };
       const pr = window.Eng.parseAttlog(DEMO_STORE.attlog.bytes, +S.dedup_seconds || 120);
+      // حارس: لا تولّد ملفاً فارغاً أبداً — أوقف برسالة تشخيصية واضحة
+      if (!pr.records.length) {
+        const head = new TextDecoder("utf-8", { fatal: false })
+          .decode(DEMO_STORE.attlog.bytes.slice(0, 300)).replace(/\r/g, " ").replace(/\n/g, " ⏎ ");
+        const reasons = pr.corrupt.slice(0, 3).map(c => `   • سطر ${c.no}: ${c.reason}`).join("\n");
+        return { ok: false, error:
+          "فشل التفريغ: لم أفهم أي سطر من الملف النصي (" + pr.totalLines + " سطر) — لن أوّلّد ملفاً فارغاً.\n" +
+          "الترميز المكتشف: " + pr.encoding + "\n" +
+          (reasons ? "أسباب الاستبعاد:\n" + reasons + "\n" : "") +
+          "أول ما في ملفك: «" + head + "»\n" +
+          "تأكد أن الملف هو attlog.txt الصادر من جهاز البصمة. إن بقي الخطأ أرسل أول 3 أسطر من الملف." };
+      }
       const att = window.Eng.processMonth(pr, S, year, month);
       const sum = att.summary();
       const base = isCsv ? `تحقق_${year}_${String(month).padStart(2, "0")}.csv`
                          : `دوام_${window.Eng.MONTH_AR[month]}_${year}.xlsx`;
       const logs = [
+        `صيغة الملف: ${pr.hasNames ? "بأسماء الموظفين" : "بدون أسماء (صيغة الجهاز: رقم + تاريخ + حالات)"}`,
         `[1/4] قراءة attlog: ${pr.records.length} بصمة سليمة | ${pr.corrupt.length} سطر تالف | ${pr.duplicates} مكرر محذوف (ترميز: ${pr.encoding})`,
         `[2/4] المعالجة: ${sum.rowsCount} يوم/موظف | ${Object.keys(sum.unmapped).length} رقم غير مربوط`,
       ];
@@ -307,13 +320,14 @@ const ICON_WARN = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" st
 const ICON_FILE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>';
 const ICON_DL  = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg>';
 
-function toast(msg, kind) {
+function toast(msg, kind, ms) {
   const el = document.createElement("div");
   el.className = "toast " + (kind === "err" ? "err" : kind === "warn" ? "warn" : "");
   el.innerHTML = (kind === "err" ? ICON_ERR : kind === "warn" ? ICON_WARN : ICON_OK) + "<span></span>";
   el.querySelector("span").textContent = msg;
   $("#toasts").appendChild(el);
-  setTimeout(() => { el.classList.add("out"); setTimeout(() => el.remove(), 300); }, 3600);
+  const dur = ms && ms > 1000 ? ms : 3600;
+  setTimeout(() => { el.classList.add("out"); setTimeout(() => el.remove(), 300); }, dur);
 }
 
 function overlay(show, text) {
@@ -552,7 +566,12 @@ function renderPreview(res, year, month) {
   $("#previewArea").classList.remove("hidden");
   $("#genEmpty").classList.add("hidden");
   $("#btnGenerate").disabled = false;
-  toast(`تمت قراءة ${st.records} بصمة لـ ${(st.employees || []).length} موظف`);
+  if (!st.records) {
+    toast("⚠ لم تُفهم أي بصمة من الملف! التوليد سيرفض إنتاج ملف فارغ — راجع التشخيص وأرسل أول 3 أسطر من ملفك إن استمر الخطأ", "err", 9000);
+  } else {
+    toast(`تمت قراءة ${st.records} بصمة لـ ${(st.employees || []).length} موظف` +
+      (st.corrupt ? ` | ${st.corrupt} سطر تالف` : ""));
+  }
 }
 
 function baseName(p) { return String(p).split(/[\\/]/).pop() || "file"; }

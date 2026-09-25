@@ -40,7 +40,7 @@ sys.path.insert(0, _CODE_DIR)
 SETTINGS_PATH = os.path.join(APP_DIR, "settings.json")
 OUTPUT_DIR = os.path.join(APP_DIR, "output")
 UPLOAD_DIR = os.path.join(APP_DIR, "uploads")
-VERSION = "2.4"
+VERSION = "2.5"
 MAX_UPLOAD = 40 * 1024 * 1024  # 40MB
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -279,6 +279,31 @@ class Api:
         out = p.get("out") or self._default_out("xlsx" if kind == "xlsx" else kind, year, month)
         os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
         logs = []
+
+        # فحص مسبع: إن لم يُفهم أي سطر نوقف التوليد فوراً برسالة واضحة
+        # بدل إنتاج ملف Excel فارغ بصمت (شكوى المستخدم: "الملف الناتج لا يجد به بيانات")
+        pre = parse_attlog(attlog, int(self.settings.get("dedup_seconds", 120)))
+        fmt_desc = ("بأسماء الموظفين" if pre.has_names else
+                    "بدون أسماء (صيغة الجهاز: رقم + تاريخ + حالات)")
+        if pre.records:
+            logs.append(f"صيغة الملف المكتشفة: {fmt_desc} | تاريخ: {pre.date_style or 'غير محددة'}")
+        if not pre.records:
+            try:
+                with open(attlog, "rb") as fh:
+                    raw_head = fh.read(400)
+                sample = raw_head.decode("utf-8", errors="replace")[:200]
+            except Exception:
+                sample = ""
+            sample = sample.replace("\r", " ").replace("\n", " ⏎ ")
+            reasons = "\n".join(f"   • سطر {ln}: {err}" for ln, _tx, err in pre.corrupt_lines[:3])
+            return {"ok": False, "error": (
+                "فشل التفريغ: لم أفهم أي سطر من الملف النصي "
+                f"({pre.total_lines} سطر) — لن أولّد ملفاً فارغاً.\n"
+                f"الترميز المكتشف: {pre.encoding}\n"
+                f"{('أسباب الاستبعاد:\n' + reasons) if reasons else 'الملف لا يحتوي أسطراً قابلة للقراءة.'}\n"
+                f"أول ما في ملفك: «{sample}»\n"
+                "تأكد أن الملف هو attlog.txt الصادر من جهاز البصمة (سطر لكل بصمة: رقم الموظف ثم التاريخ والوقت). "
+                "إن بقي الخطأ أرسل أول 3 أسطر من الملف لإضافة دعم صيغتك فوراً.")}
 
         if kind == "csv":
             pr = parse_attlog(attlog, int(self.settings.get("dedup_seconds", 120)))
