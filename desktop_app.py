@@ -296,11 +296,13 @@ class Api:
                 sample = ""
             sample = sample.replace("\r", " ").replace("\n", " ⏎ ")
             reasons = "\n".join(f"   • سطر {ln}: {err}" for ln, _tx, err in pre.corrupt_lines[:3])
+            reasons_block = (("أسباب الاستبعاد:\n" + reasons) if reasons
+                             else "الملف لا يحتوي أسطراً قابلة للقراءة.")
             return {"ok": False, "error": (
                 "فشل التفريغ: لم أفهم أي سطر من الملف النصي "
                 f"({pre.total_lines} سطر) — لن أولّد ملفاً فارغاً.\n"
                 f"الترميز المكتشف: {pre.encoding}\n"
-                f"{('أسباب الاستبعاد:\n' + reasons) if reasons else 'الملف لا يحتوي أسطراً قابلة للقراءة.'}\n"
+                f"{reasons_block}\n"
                 f"أول ما في ملفك: «{sample}»\n"
                 "تأكد أن الملف هو attlog.txt الصادر من جهاز البصمة (سطر لكل بصمة: رقم الموظف ثم التاريخ والوقت). "
                 "إن بقي الخطأ أرسل أول 3 أسطر من الملف لإضافة دعم صيغتك فوراً.")}
